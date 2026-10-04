@@ -85,7 +85,7 @@ Every command is fixed text, and none goes through a shell.
 | `claude -p --no-session-persistence /usage` | Only when you press **↻ Refresh** | The only fresh source for per-model quotas such as Fable. The mod looks for `claude` on your `PATH`, then in `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin` and `/usr/local/bin`. It saves no session. |
 | `defaults read -g AppleLanguages` | At session start, and when you change Claude Code's language | Reads the macOS language when Claude Code's own language setting is not set (macOS only). |
 | `tail -n 8000 ~/.weektoken/samples.jsonl` | At session start and every 10 minutes, only if the file exists | Imports history from the WeekToken macOS app. |
-| `perl -0777 -ne '<fixed pattern>' ~/.claude.json` | Only when `~/.claude.json` is over 4 MiB and can't be read directly | Extracts just the `cachedUsageUtilization` entry. |
+| `perl`, with one fixed pattern and no shell | Only when `~/.claude.json` is over 4 MiB and can't be read directly | Extracts just the `cachedUsageUtilization` entry from that file and prints it back to the mod; nothing else is read or sent. |
 
 ### What it reads on your machine
 
@@ -128,4 +128,4 @@ claude plugin test
 
 ## Author
 
-mj0111 · [@mj0011sec](https://x.com/mj0011sec)
+mj0111 · @mj0011sec on X

@@ -85,7 +85,7 @@ WeekToken 自己不联网,读到的任何东西都不会发出去。唯一离开
 | `claude -p --no-session-persistence /usage` | 只在点「↻ 刷新」时 | Fable 这类按模型的配额,只有它能给出最新值。mod 先在 `PATH` 里找 `claude`,再找 `~/.local/bin`、`~/.claude/local`、`/opt/homebrew/bin`、`/usr/local/bin`。不留会话记录 |
 | `defaults read -g AppleLanguages` | 会话开始时,以及改了 Claude Code 的语言设置时 | Claude Code 没设语言时,读 macOS 的系统语言(只在 macOS 上) |
 | `tail -n 8000 ~/.weektoken/samples.jsonl` | 会话开始时和每 10 分钟,文件存在才运行 | 导入 WeekToken macOS 版的历史 |
-| `perl -0777 -ne '<固定的正则>' ~/.claude.json` | 只在 `~/.claude.json` 超过 4 MiB、无法直接读取时 | 只抽出 `cachedUsageUtilization` 这一项 |
+| `perl`,一个固定的正则,不经过 shell | 只在 `~/.claude.json` 超过 4 MiB、无法直接读取时 | 只从这个文件里抽出 `cachedUsageUtilization` 这一项交回 mod,别的不读也不发 |
 
 ### 在你电脑上读什么
 
@@ -128,4 +128,4 @@ claude plugin test
 
 ## 作者
 
-mj0111 · [@mj0011sec](https://x.com/mj0011sec)
+mj0111 · X(推特)@mj0011sec
