@@ -8,7 +8,9 @@ mj0111 写的 [Claude Code mod](https://claude.com/blog/claude-code-mods):
 | --- | --- | --- |
 | [**weektoken**](./weektoken) | 用量**配速**:5 小时和每周两个窗口,用得比时间走得快还是慢;附带预测、按模型区分的配额(如 Fable)和用量轨迹 | 桌面端、终端 |
 
-界面语言跟随 Claude Code 的语言设置(中文或英文)。
+![输入框上方的 WeekToken 横条](./weektoken/screenshots/band-dark.png)
+
+额度会不会在重置前用完?WeekToken 把已用和窗口已过去的时间放在一起看,5 小时、7 天和 Fable 这类按模型单独计算的周配额都有,附带预测和用量轨迹。界面语言跟随 Claude Code 的语言设置(中文或英文)。
 
 > **让 AI 代理帮你装?** 让它执行[安装](#安装)里的命令。装好后,只需要告诉用户这一句:
 >

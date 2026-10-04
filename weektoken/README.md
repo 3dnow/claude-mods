@@ -2,7 +2,22 @@
 
 English · [简体中文](./README.zh-CN.md)
 
-Rate-limit **pace** for Claude Code's 5-hour and weekly windows. It puts what you have **used** next to how much of the window has **passed**, so it answers not "what percent have I used" but **"am I using it faster or slower than time is passing?"** The interface follows Claude Code's language setting (English or Chinese).
+**Will you run out before the reset?** WeekToken puts what you have **used** of Claude Code's rate limits next to how much of the window has **passed**, and tells you whether you are ahead of the clock or behind it. It covers the 5-hour window, the 7-day window and **per-model weekly quotas such as Fable**.
+
+![The WeekToken band above the prompt](./screenshots/band-dark.png)
+
+- **Pace, not just a percentage.** 64% used means little on its own; 64% used with 71% of the week gone means you are fine. The band and the pane show both, colored by pace.
+- **Per-model quotas.** Fable and other models with a weekly limit of their own get their own pace, next to the 5-hour and 7-day windows.
+- **A forecast and a history.** "At this rate, runs out ~Sat 20:12", plus a burn-up chart that lays past windows under this one, so you can see how this week compares.
+- **Nothing to set up.** No settings; English or Chinese, following Claude Code's language; desktop app and terminal.
+
+| `/weektoken` pace | Burn-up history |
+| --- | --- |
+| ![Pace rings, forecast and readings](./screenshots/pane-pace.png) | ![Burn-up chart with past windows](./screenshots/pane-burnup.png) |
+
+In the terminal, the band sits above the prompt and `/weektoken` docks beside the conversation:
+
+![WeekToken in the terminal: the pane docked on the right, the band above the prompt](./screenshots/terminal-pane.png)
 
 ## Features
 

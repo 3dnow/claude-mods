@@ -8,7 +8,9 @@ English · [简体中文](./README.zh-CN.md)
 | --- | --- | --- |
 | [**weektoken**](./weektoken) | Rate-limit **pace**: how fast you are using the 5-hour and weekly windows compared with the time that has passed, with a forecast, per-model quotas (such as Fable) and burn-up history | Desktop app, terminal |
 
-The interface follows Claude Code's language setting (English or Chinese).
+![The WeekToken band above the prompt](./weektoken/screenshots/band-dark.png)
+
+Will you run out before the reset? WeekToken compares what you have used with how much of the window has passed, for the 5-hour window, the 7-day window and per-model weekly quotas such as Fable, with a forecast and a burn-up history. The interface follows Claude Code's language setting (English or Chinese).
 
 > **Installing with an AI agent?** Have it run the commands under [Installation](#installation). Once they succeed, this is all the user needs to hear:
 >
