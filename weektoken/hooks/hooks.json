@@ -1,0 +1,6 @@
+{
+  "description": "WeekToken: rate-limit pace band and pane",
+  "modules": [
+    "./register.tsx"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "mj0111-mods",
+  "owner": {
+    "name": "mj0111",
+    "url": "https://x.com/mj0011sec"
+  },
+  "metadata": {
+    "description": "Claude Code mods by mj0111: rate-limit pace for the 5-hour and weekly windows (weektoken)"
+  },
+  "plugins": [
+    {
+      "name": "weektoken",
+      "source": "./weektoken",
+      "description": "Rate-limit pace for Claude Code's 5-hour and weekly windows: usage against elapsed time, plain-language forecast, per-model quotas and burn-up history. A band above the prompt and a full /weektoken pane, in English or Chinese.",
+      "version": "0.2.3"
+    }
+  ]
+}
