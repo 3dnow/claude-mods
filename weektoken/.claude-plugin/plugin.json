@@ -1,7 +1,7 @@
 {
   "name": "weektoken",
   "displayName": "WeekToken",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Rate-limit pace for Claude Code's 5-hour and weekly windows: usage against elapsed time, plain-language forecast, per-model quotas and burn-up history. A band above the prompt and a full /weektoken pane, in English or Chinese.",
   "keywords": [
     "usage",
@@ -16,5 +16,10 @@
   },
   "homepage": "https://github.com/3dnow/claude-mods/tree/main/weektoken",
   "repository": "https://github.com/3dnow/claude-mods",
-  "license": "MIT"
+  "license": "MIT",
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://github.com/3dnow/claude-mods/blob/main/weektoken/README.md",
+  "supportUrl": "https://github.com/3dnow/claude-mods/issues",
+  "privacyPolicyUrl": "https://github.com/3dnow/claude-mods/blob/main/weektoken/README.md#privacy-and-permissions",
+  "termsOfServiceUrl": "https://github.com/3dnow/claude-mods/blob/main/LICENSE"
 }
