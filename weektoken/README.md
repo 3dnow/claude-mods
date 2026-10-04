@@ -70,16 +70,49 @@ Nothing to configure. Two environment variables override the defaults; set them 
 
 ## Privacy and permissions
 
-Mods run with the same access as Claude Code itself and are not sandboxed. Everything this mod touches:
+Mods run with the same access as Claude Code itself and are not sandboxed. This is everything WeekToken does besides drawing its own band and pane.
 
-- **Reads** the session's usage figures (`session.measure`, `$.session.usage`), the time and model of each reply (`turn.complete`, to tell when a quota was last used), Claude Code's `language` setting, and the environment variables `HOME`, `LANG`/`LC_*`, `WEEKTOKEN_LANG`, `WEEKTOKEN_HISTORY` and `CLAUDE_MODS_DISABLE`.
-- **Reads files:** `~/.claude.json`, parsed whole but only its `cachedUsageUtilization` entry is used (when the file is over 4 MiB and cannot be read, `perl` extracts just that entry); `~/.weektoken/samples.jsonl` if it exists (the last 8000 lines, via `tail`).
-- **Runs:**
-  - `defaults read -g AppleLanguages`, to read the macOS language.
-  - `tail` and `perl`, as above.
-  - Only when you press **↻ Refresh**: `claude -p --no-session-persistence /usage`, Claude Code's own local command, which looks up usage with your own login. It calls no model, uses no quota and saves no session (checked with `--debug-file`: it only requests the usage endpoint).
-- **Stores** in the mod's own store: samples (up to 8000) and their version stamp, when each model was last used, whether the band is shown and which quota it shows, the quota selected in the pane, the modification time of the imported history file, and whether the welcome notice was shown. The interface language is detected each session, not stored.
-- The mod itself **makes no network calls and sends no data anywhere**.
+### What it sends, and where
+
+WeekToken itself makes no network calls, and nothing it reads is sent anywhere. The only request that leaves your machine is made by Claude Code, not by the mod: when you press **↻ Refresh**, the mod runs Claude Code's own `/usage` command (below), and Claude Code looks up your usage at Anthropic's usage endpoint (`/api/oauth/usage`) with the login it already has. No model is called and no quota is used; checked with `claude --debug-file`.
+
+### Programs it runs, and why
+
+Every command is fixed text, and none goes through a shell.
+
+| Command | When | Why |
+| --- | --- | --- |
+| `claude -p --no-session-persistence /usage` | Only when you press **↻ Refresh** | The only fresh source for per-model quotas such as Fable. The mod looks for `claude` on your `PATH`, then in `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin` and `/usr/local/bin`. It saves no session. |
+| `defaults read -g AppleLanguages` | At session start, and when you change Claude Code's language | Reads the macOS language when Claude Code's own language setting is not set (macOS only). |
+| `tail -n 8000 ~/.weektoken/samples.jsonl` | At session start and every 10 minutes, only if the file exists | Imports history from the WeekToken macOS app. |
+| `perl -0777 -ne '<fixed pattern>' ~/.claude.json` | Only when `~/.claude.json` is over 4 MiB and can't be read directly | Extracts just the `cachedUsageUtilization` entry. |
+
+### What it reads on your machine
+
+- `~/.claude.json`, Claude Code's own file. Only its `cachedUsageUtilization` entry is used: Claude Code's usage cache, which includes per-model quotas. The file also holds account details; those are not used or kept. It is read at session start, every 5 minutes when the file has changed, and on Refresh.
+- `~/.weektoken/samples.jsonl`, or the file named by `WEEKTOKEN_HISTORY`, if it exists.
+- Environment variables: `HOME` and `PATH` (to find the files and `claude` above), `LANG`, `LC_ALL` and `LC_MESSAGES` (the language), `WEEKTOKEN_LANG`, `WEEKTOKEN_HISTORY` and `CLAUDE_MODS_DISABLE`. It reads no credentials.
+- From Claude Code: the session's rate-limit figures, the time and model of each reply, and the `language` setting.
+
+### What it stores
+
+In the mod's own store on your machine: samples (up to 8000) and their version stamp, when each model was last used, whether the band is shown and which quota it shows, the quota selected in the pane, the modification time of the imported history file, and whether the welcome notice was shown. The interface language is detected each session, not stored.
+
+### Hooks
+
+| Hook | What it does |
+| --- | --- |
+| `session.start` | Registers `/weektoken`, loads the stored samples, reads the sources above and starts the 1-, 5- and 10-minute timers |
+| `session.measure` | Records the session's 5-hour and 7-day figures when they change |
+| `turn.complete` | Records the time and model of each reply, to tell when a quota was last used |
+| `command.run`, `/weektoken` only | Answers its own command: opens the pane, or shows or hides the band |
+| `ui.render`, `AbovePrompt` | Draws the band, then whatever other plugins or Claude Code draw there, below it |
+| `ui.render`, the `weektoken` pane only | Draws the `/weektoken` pane |
+| `ui.press` | Notes presses on its own pane and passes every press on unchanged |
+| `ui.focus` | Passes the event on unchanged. On its own pane in the desktop app, when a click only moved the focus to a button (the first click on an unfocused pane), it runs that button's action |
+| `config.set`, `language` only | Passes the change on unchanged, then detects the interface language again |
+
+It changes no settings or permissions, and it leaves other plugins' events as they are.
 
 ## Requirements
 

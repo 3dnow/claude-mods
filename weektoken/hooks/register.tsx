@@ -233,18 +233,15 @@ async function sampleCache($: any, force = false): Promise<boolean> {
 }
 
 async function extractCacheWithPerl($: any, path: string): Promise<string | null> {
-  const D = String.fromCharCode(36)
-  // -0777:整个文件读进 $_;路径作为参数直接交给 perl,不经过 shell
-  const script = `print ${D}1 if /"cachedUsageUtilization"\\s*:\\s*(\\{(?:[^{}"]++|"(?:\\\\.|[^"\\\\])*+"|(?1))*\\})/`
+  // -0777:整个文件读进来;程序和正则是固定文本,路径作为参数直接交给 perl,不经过 shell
   try {
-    const r = await $.process.run(['perl', '-0777', '-ne', script, path], { timeoutMs: 15_000 })
+    const r = await $.process.run(['perl', '-0777', '-ne', 'print $1 if /"cachedUsageUtilization"\\s*:\\s*(\\{(?:[^{}"]++|"(?:\\\\.|[^"\\\\])*+"|(?1))*\\})/', path], { timeoutMs: 15_000 })
     if (r.exitCode === 0 && r.stdout.trim().startsWith('{')) return `{"cachedUsageUtilization":${r.stdout.trim()}}`
   } catch {}
   return null
 }
 
-/** WeekToken macOS 版的历史采样(只读);文件没变就不再导入。返回新导入的条数 */
-/** WeekToken macOS 版的历史(只读);默认位置,WEEKTOKEN_HISTORY 可改,设成空串就不导入 */
+/** WeekToken macOS 版的历史(只读);默认位置,WEEKTOKEN_HISTORY 可改,设成空串就不导入。文件没变就不再导入,返回新导入的条数 */
 async function importHistory($: any): Promise<number> {
   const file = ((await $.env.get('WEEKTOKEN_HISTORY')) ?? '~/.weektoken/samples.jsonl').trim()
   if (!file) return 0
@@ -286,18 +283,18 @@ async function loadState($: any): Promise<void> {
 /**
  * 本机 claude 的 /usage:分模型配额(Fable 等)唯一的新鲜来源。本地命令,不调模型、不耗额度、
  * 不留会话记录;要扫本机会话算用量构成,约 10 秒,所以只在手动刷新时跑。
- * 桌面端起的进程 PATH 里未必有 claude:先找常见安装位置,最后交给登录 shell。
+ * 命令是固定文本,按名字找 claude。桌面端起的进程 PATH 里未必有它,
+ * 所以在原有 PATH 后面接上几个常见安装位置(env.PATH 会用来查找程序,已实测)。
  */
-const USAGE_SCRIPT = [
-  'for c in "$(command -v claude 2>/dev/null)" "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do',
-  '  if [ -n "$c" ] && [ -x "$c" ]; then exec "$c" -p --no-session-persistence /usage; fi',
-  'done',
-  'exec "${SHELL:-/bin/zsh}" -lc "claude -p --no-session-persistence /usage"',
-].join('\n')
+async function usagePath($: any): Promise<string> {
+  const home = (await $.env.get('HOME')) ?? ''
+  const extra = home ? [`${home}/.local/bin`, `${home}/.claude/local`] : []
+  return [(await $.env.get('PATH')) ?? '/usr/bin:/bin', ...extra, '/opt/homebrew/bin', '/usr/local/bin'].join(':')
+}
 
 /** 跑 /usage 并记一次采样;ok = 拿到并认出了输出 */
 async function sampleUsageCommand($: any): Promise<{ ok: boolean; changed: boolean }> {
-  const r = await $.process.run(['/bin/bash', '-c', USAGE_SCRIPT], { timeoutMs: 60_000 })
+  const r = await $.process.run(['claude', '-p', '--no-session-persistence', '/usage'], { timeoutMs: 60_000, env: { PATH: await usagePath($) } })
   if (r.exitCode !== 0) return { ok: false, changed: false }
   const s = P.parseUsageCommand(r.stdout, await $.clock.now())
   if (!s) return { ok: false, changed: false }
@@ -978,12 +975,11 @@ export const register: Register = on => {
     return r
   })
 
-  // 在 /config 里改了 Claude Code 的语言:重新探测,横条和面板随之重画,命令说明也换成新语言
+  // 在 /config 里改了 Claude Code 的语言:设置原样交给引擎,稍后(新值已生效)重新探测,
+  // 横条和面板随之重画,命令说明也换成新语言
   on('config.set', { key: 'language' }, async ($, e, next) => {
-    const r = await next(e)
-    if (disabled) return r
-    try { if (await refreshLang($)) await $.command.register(commandSpec()) } catch {}
-    return r
+    if (!disabled) $.clock.after(300, () => { void refreshLang($).then(changed => (changed ? $.command.register(commandSpec()) : undefined)).catch(() => {}) })
+    return next(e)
   })
 
   // 横条只读这几样:显示/隐藏、确认提示、语言、要画的内容(已取整)。采样和面板状态都不读。

@@ -70,16 +70,49 @@
 
 ## 隐私与权限
 
-mod 和 Claude Code 本身权限相同、不在沙箱里。这个 mod 碰到的全部东西:
+mod 和 Claude Code 本身权限相同、不在沙箱里。下面是 WeekToken 除了画自己的横条和面板之外做的全部事情。
 
-- **读**:会话的用量数据(`session.measure`、`$.session.usage`);每轮回复的时刻和所用模型(`turn.complete`,用来判断配额上次什么时候被用);Claude Code 的 `language` 设置;环境变量 `HOME`、`LANG`/`LC_*`、`WEEKTOKEN_LANG`、`WEEKTOKEN_HISTORY`、`CLAUDE_MODS_DISABLE`。
-- **读文件**:`~/.claude.json`,整份读进来解析,只用其中 `cachedUsageUtilization` 这一项(文件超过 4 MiB 读不进来时,改用 `perl` 只抽这一段);`~/.weektoken/samples.jsonl`(如果存在,用 `tail` 读最后 8000 行)。
-- **运行命令**:
-  - `defaults read -g AppleLanguages`:读 macOS 系统语言。
-  - `tail` / `perl`:见上一条。
-  - 只在点「↻ 刷新」时运行 `claude -p --no-session-persistence /usage`:本机 Claude Code 的本地命令,用你自己的登录查询用量,不调模型、不耗额度、不留会话记录(用 `--debug-file` 核对过:只请求用量接口)。
-- **存储**:采样(最多 8000 条)及其版本号、各模型最近一次被用的时刻、横条显示/隐藏和显示的配额、面板选中的配额、导入过的历史文件的修改时间、是否已显示过欢迎提示,存在本 mod 自己的存储里。界面语言每次会话重新探测,不存。
-- mod 自身**不联网、不往任何地方发数据**。
+### 发送什么、发到哪里
+
+WeekToken 自己不联网,读到的任何东西都不会发出去。唯一离开你电脑的请求是 Claude Code 发的,不是 mod 发的:点「↻ 刷新」时,mod 运行 Claude Code 自带的 `/usage` 命令(见下表),由 Claude Code 用它已有的登录去 Anthropic 的用量接口(`/api/oauth/usage`)查询用量。不调模型、不耗额度;用 `claude --debug-file` 核对过。
+
+### 运行哪些程序、为什么
+
+所有命令都是固定文本,都不经过 shell。
+
+| 命令 | 什么时候 | 为什么 |
+| --- | --- | --- |
+| `claude -p --no-session-persistence /usage` | 只在点「↻ 刷新」时 | Fable 这类按模型的配额,只有它能给出最新值。mod 先在 `PATH` 里找 `claude`,再找 `~/.local/bin`、`~/.claude/local`、`/opt/homebrew/bin`、`/usr/local/bin`。不留会话记录 |
+| `defaults read -g AppleLanguages` | 会话开始时,以及改了 Claude Code 的语言设置时 | Claude Code 没设语言时,读 macOS 的系统语言(只在 macOS 上) |
+| `tail -n 8000 ~/.weektoken/samples.jsonl` | 会话开始时和每 10 分钟,文件存在才运行 | 导入 WeekToken macOS 版的历史 |
+| `perl -0777 -ne '<固定的正则>' ~/.claude.json` | 只在 `~/.claude.json` 超过 4 MiB、无法直接读取时 | 只抽出 `cachedUsageUtilization` 这一项 |
+
+### 在你电脑上读什么
+
+- `~/.claude.json`,Claude Code 自己的文件。只用其中的 `cachedUsageUtilization`:Claude Code 的用量缓存,含按模型的配额。这个文件里还有账号信息,mod 不用也不留。会话开始时读一次,之后每 5 分钟在文件变了时读,点刷新时也读。
+- `~/.weektoken/samples.jsonl`,或 `WEEKTOKEN_HISTORY` 指定的文件,存在时才读。
+- 环境变量:`HOME` 和 `PATH`(用来找上面的文件和 `claude`)、`LANG`、`LC_ALL`、`LC_MESSAGES`(界面语言)、`WEEKTOKEN_LANG`、`WEEKTOKEN_HISTORY`、`CLAUDE_MODS_DISABLE`。不读任何凭据。
+- 从 Claude Code 读:会话的限额数据、每轮回复的时刻和所用模型、`language` 设置。
+
+### 存什么
+
+存在本 mod 自己的存储里、留在你的电脑上:采样(最多 8000 条)及其版本号、各模型最近一次被用的时刻、横条显示/隐藏和显示的配额、面板选中的配额、导入过的历史文件的修改时间、是否已显示过欢迎提示。界面语言每次会话重新探测,不存。
+
+### 钩子
+
+| 钩子 | 做什么 |
+| --- | --- |
+| `session.start` | 注册 `/weektoken`,载入已存的采样,读上面的数据来源,启动 1、5、10 分钟的定时器 |
+| `session.measure` | 会话的 5 小时、7 天数据变了时记一次采样 |
+| `turn.complete` | 记下每轮回复的时刻和模型,用来判断配额上次什么时候被用 |
+| `command.run`,只管 `/weektoken` | 回答自己的命令:打开面板,或显示、隐藏横条 |
+| `ui.render`,`AbovePrompt` | 画横条,再把别的插件或 Claude Code 在这里画的东西接在下面 |
+| `ui.render`,只管 `weektoken` 面板 | 画 `/weektoken` 面板 |
+| `ui.press` | 记下自己面板上的按下,所有按下原样往下传 |
+| `ui.focus` | 事件原样往下传。在桌面端自己的面板上,如果一次点击只把焦点移到了按钮上(面板没焦点时的第一次点击),就执行那个按钮的动作 |
+| `config.set`,只管 `language` | 设置原样往下传,之后重新探测界面语言 |
+
+它不改任何设置或权限,也不动别的插件的事件。
 
 ## 要求
 

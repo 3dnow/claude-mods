@@ -369,6 +369,8 @@ test('改了 Claude Code 的语言:横条换语言,命令说明也重新注册',
   expect(JSON.stringify(await ui.drawn())).toContain('已用 64%')
   stored.__setting = 'English'
   await $.config.set({ key: 'language', value: 'English' } as any)
+  // 设置原样交给引擎,稍后再探测语言
+  await (stored.__clock as { advance: (ms: number) => Promise<void> }).advance(400)
   expect(JSON.stringify(await ui.drawn())).toContain('64% used')
   expect((stored.__registered as string[]).filter(n => n === 'weektoken').length).toBe(2)
 })
