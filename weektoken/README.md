@@ -1,7 +1,5 @@
 # WeekToken
 
-English · [简体中文](./README.zh-CN.md)
-
 **Will you run out before the reset?** WeekToken puts what you have **used** of Claude Code's rate limits next to how much of the window has **passed**, and tells you whether you are ahead of the clock or behind it. It covers the 5-hour window, the 7-day window and **per-model weekly quotas such as Fable**.
 
 ![The WeekToken band above the prompt](./screenshots/band-dark.png)

@@ -1,7 +1,5 @@
 # mj0111 mods for Claude Code
 
-English · [简体中文](./README.zh-CN.md)
-
 [Claude Code mods](https://claude.com/blog/claude-code-mods) by mj0111:
 
 | Mod | What it does | Surfaces |

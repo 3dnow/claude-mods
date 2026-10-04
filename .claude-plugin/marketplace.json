@@ -12,7 +12,7 @@
       "name": "weektoken",
       "source": "./weektoken",
       "description": "Rate-limit pace for Claude Code's 5-hour and weekly windows: usage against elapsed time, plain-language forecast, per-model quotas and burn-up history. A band above the prompt and a full /weektoken pane, in English or Chinese.",
-      "version": "0.2.6"
+      "version": "0.2.7"
     }
   ]
 }
