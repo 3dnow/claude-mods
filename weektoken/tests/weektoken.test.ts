@@ -119,18 +119,24 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(JSON.stringify(await ui.drawn())).toContain('显示横条')
     await ui.press({ key: 'band-toggle' } as any)
     expect(stored.band).toBe('open')
-    // 两个配额(5 小时、7 天):配速页圆环两侧有切换按钮
+    // 两个配额(5 小时、7 天):有切换按钮(桌面端在标题两侧,终端在配速页下方)
     expect(pace).toContain('"key":"next"')
     await ui.press({ key: 'tab-burnup' } as any)
     const burn = JSON.stringify(await ui.drawn())
     expect(burn).toContain('用量轨迹')
-    // 用量轨迹页用下拉选配额(终端和桌面都有 Select)
-    expect(burn).toContain('"key":"quota"')
-    await ui.select({ key: 'quota', value: 'five_hour' } as any)
-    const switched = JSON.stringify(await ui.drawn())
-    expect(switched).toContain('5 小时会话额度')
-    // 选项里仍有 7 天,但当前值换成了 5 小时
-    expect(switched).toContain('"value":"five_hour"')
+    if (surface === 'terminal') {
+      // 终端的用量轨迹页用下拉选配额
+      expect(burn).toContain('"key":"quota"')
+      await ui.select({ key: 'quota', value: 'five_hour' } as any)
+      const switched = JSON.stringify(await ui.drawn())
+      expect(switched).toContain('5 小时会话额度')
+      // 选项里仍有 7 天,但当前值换成了 5 小时
+      expect(switched).toContain('"value":"five_hour"')
+    } else {
+      // 桌面端用标题两侧的箭头,用量轨迹页里也在
+      await ui.press({ key: 'next' } as any)
+      expect(JSON.stringify(await ui.drawn())).toContain('5 小时会话额度')
+    }
   })
 }
 
@@ -174,16 +180,21 @@ test('环境变量 WEEKTOKEN_LANG=zh 压过 Claude Code 的英文设置', async 
 test('点刷新会跑 /usage,补上 Fable 这类分模型配额', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
-  const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: { bodyColumns: 60 } as any } as any)
-  expect(JSON.stringify(await ui.drawn())).not.toContain('Fable')
-  await ui.press({ key: 'refresh' } as any)
-  await ui.press({ key: 'tab-burnup' } as any)
-  const burn = JSON.stringify(await ui.drawn())
-  // 下拉选项是短名:Fable / 全部模型 / 5 小时
+  // 终端:用量轨迹页的下拉里多出 Fable,选项是短名
+  const term = await $.ui.mount({ plugin: 'weektoken', surface: 'terminal', component: 'Pane', requestId: 'weektoken', props: { bodyColumns: 60 } as any } as any)
+  expect(JSON.stringify(await term.drawn())).not.toContain('Fable')
+  await term.press({ key: 'refresh' } as any)
+  await term.press({ key: 'tab-burnup' } as any)
+  const burn = JSON.stringify(await term.drawn())
   expect(burn).toContain('"label":"Fable"')
   expect(burn).toContain('"label":"全部模型"')
   expect(burn).toContain('"label":"5 小时"')
   expect(burn).toContain('↻ 刷新')
+  // 桌面:标题两侧的箭头能翻到 Fable
+  const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: { bodyColumns: 60 } as any } as any)
+  let seen = false
+  for (let i = 0; i < 3 && !seen; i++) { await ui.press({ key: 'next' } as any); seen = JSON.stringify(await ui.drawn()).includes('Fable') }
+  expect(seen).toBe(true)
 })
 
 test('旧版钉住的配额沿用为横条显示的配额,旧的「收起」当作显示', async ($, on) => {
@@ -248,8 +259,9 @@ test('「上次使用」看本机的回复:一直在回复就不提示;Fable 只
   await ui.press({ key: 'tab-pace' } as any)
   expect(JSON.stringify(await ui.drawn())).toContain('上次使用：40 分前')
   // 切到 Fable:这段时间只用了 Opus,从刷新拿到 Fable 起就没用过
-  await ui.press({ key: 'tab-burnup' } as any)
-  await ui.select({ key: 'quota', value: 'weekly_fable' } as any)
+  // 用标题两侧的箭头翻到 Fable
+  for (let i = 0; i < 3 && (stored.view as { key?: string } | undefined)?.key !== 'weekly_fable'; i++) await ui.press({ key: 'next' } as any)
+  expect((stored.view as { key: string }).key).toBe('weekly_fable')
   expect(JSON.stringify(await ui.drawn())).toContain('至少 1 小时 20 分没用过 Fable')
 })
 
@@ -413,9 +425,9 @@ test('横条和面板看同一个配额:任何一处切换,两边一起换', asy
   expect(JSON.stringify(await band.drawn())).toContain('已用 64%')
   expect(stored.bandKey).toBe('seven_day')
   expect((stored.view as { key: string }).key).toBe('seven_day')
-  // 用量轨迹页的下拉也一样
+  // 用量轨迹页里的箭头也一样
   await pane.press({ key: 'tab-burnup' } as any)
-  await pane.select({ key: 'quota', value: 'five_hour' } as any)
+  await pane.press({ key: 'next' } as any)
   expect(JSON.stringify(await band.drawn())).toContain('已用 40%')
 })
 
@@ -522,4 +534,29 @@ test('配速页:三个读数画进圆环图里;没超速画同色余量斜线,�
   const over = JSON.stringify(await pane.drawn())
   expect(over).toMatch(/url\(#wtr[0-9a-z]+x\)/)
   expect(over).toContain('>90%</text>')
+})
+
+test('桌面端面板:切换箭头在标题两侧(同横条),名字那格宽度固定;圆环那一行只放图', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  const tree = await pane.drawn() as any
+  const header = tree.children[0]
+  const json = JSON.stringify(header)
+  expect(json).toContain('"key":"prev"')
+  expect(json).toContain('"key":"next"')
+  expect(json).toContain('7 天 · 全部模型')
+  // 名字那格的宽度按最长的配额名定,切换后不变
+  const width = (h: any) => h.children.find((c: any) => c.type === 'Box' && typeof c.props?.width === 'number')?.props.width
+  const w0 = width(header)
+  expect(w0).toBeGreaterThan(0)
+  await pane.press({ key: 'next' } as any)
+  const after = (await pane.drawn() as any).children[0]
+  expect(JSON.stringify(after)).toContain('5 小时')
+  expect(width(after)).toBe(w0)
+  // 圆环那一行不再夹着按钮;用量轨迹页也不再另放配额下拉
+  const all = JSON.stringify(await pane.drawn())
+  expect(all.match(/"key":"prev"/g)?.length).toBe(1)
+  await pane.press({ key: 'tab-burnup' } as any)
+  expect(JSON.stringify(await pane.drawn())).not.toContain('"key":"quota"')
 })

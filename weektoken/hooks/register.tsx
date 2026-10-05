@@ -698,21 +698,6 @@ function drawEmpty($: any, e: any) {
   )
 }
 
-/**
- * 配速页的切换按钮。mod 里只有 Button 收得到点击,而且它的外观是宿主的;
- * 自己画的外框点不到,所以用原生按钮本身:整块可点,粗箭头 + 空格撑宽,悬停时箭头染成目标配额的身份色。
- */
-function switchButton($: any, e: any, m: Model, key: string, offset: -1 | 1) {
-  const { Box, Button } = $.ui.resolve(e)
-  const tint = identityText(P.neighbor(key, m.keys, offset) as string)
-  const name = offset < 0 ? 'prev' : 'next'
-  return (
-    <Box key={`sw-${name}`}>
-      <Button key={name} label={offset < 0 ? '\u2003❮\u2003' : '\u2003❯\u2003'} hover={{ color: tint, bold: true }} onPress={paneAct(name, () => stepKey($, m.keys, key, offset))} />
-    </Box>
-  )
-}
-
 function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: QuotaRow) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const term = e.surface === 'terminal'
@@ -766,13 +751,9 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
     : d.kind === 'usageOnly' ? { kind: 'pct' as const, text: `${Math.round(d.obs.u)}%` } : { kind: 'none' as const }
   return (
     <Box flexDirection="column" alignItems="center" gap={1}>
-      {/* 左右切换配额:推到这一行的两端,位置固定、不贴圆环(贴着会被辉光吃掉) */}
-      <Box flexDirection="row" alignItems="center" width="100%">
-        {canSwitch ? switchButton($, e, m, row.key, -1) : null}
-        <Box flexGrow={1} />
+      {/* 切换配额的箭头在标题两侧(见 drawPane);这一行只放图,居中 */}
+      <Box flexDirection="row" justifyContent="center" width="100%">
         {pic($, e, ringsSvg({ used, elapsed: pace?.elapsed ?? null, status: st, id, center, label: P.displayLabel(d), title: label, readings: pace ? metrics.map(x => ({ label: x.l.toUpperCase(), value: x.v, accent: !!x.accent })) : [] }), label)}
-        <Box flexGrow={1} />
-        {canSwitch ? switchButton($, e, m, row.key, 1) : null}
       </Box>
       <Box flexDirection="column" alignItems="center">
         <Text bold>{P.displayHeadline(d)}</Text>
@@ -788,8 +769,8 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
   const { Box, Text, Button, Select } = $.ui.resolve(e)
   const o = P.buildOverlay(row.key, samples, row.len.seconds, view.range, view.offset, now)
   const ranges: P.Range[] = ['current', 'month', 'all']
-  // 选配额用下拉;没有 Select 的表面(手机)退回左右按钮
-  const quotaPick = m.keys.length < 2 ? null : Select ? (
+  // 桌面端标题两侧已有箭头,不再另放;终端用下拉;没有 Select 的表面(手机)退回左右按钮
+  const quotaPick = m.keys.length < 2 || e.surface !== 'terminal' ? null : Select ? (
     <Select key="quota" options={m.keys.map(k => ({ value: k, label: P.pickName(k, m.rows[k].obs?.n) }))} value={row.key} onSelect={(k: string) => quiet(selectQuota($, k))} />
   ) : (
     <Box flexDirection="row" gap={1}>
@@ -924,10 +905,33 @@ function drawPane($: any, e: any, samples: readonly Sample[], activity: Activity
       </Box>
     )
   }
-  const header = (
-    <Box flexDirection="row" alignItems="center" gap={1}>
-      <Text color={identityText(row.key)} bold wrap="truncate-end">{row.full}</Text>
+  // 桌面端:切换配额的箭头在标题两侧,和横条一样;名字那格按最长的配额名定宽,切换时箭头不挪。
+  // (箭头早先在圆环那一行的两端;读数排进图里以后图宽了一半,箭头被挤得贴住圆环)
+  // 终端配速页另有带名字的按钮(h / l),标题不加箭头
+  const headArrows = !term && m.keys.length > 1
+  const headArrow = (offset: -1 | 1) => {
+    const name = offset < 0 ? 'prev' : 'next'
+    return (
+      <Box key={`sw-${name}`} flexShrink={0}>
+        <Button
+          key={name}
+          label={offset < 0 ? '❮' : '❯'}
+          plain
+          hover={{ color: identityText(P.neighbor(row.key, m.keys, offset) as string), bold: true }}
+          onPress={paneAct(name, () => stepKey($, m.keys, row.key, offset))}
+        />
+      </Box>
+    )
+  }
+  const title = <Text color={identityText(row.key)} bold wrap="truncate-end">{row.full}</Text>
+  const header = headArrows ? (
+    <Box flexDirection="row" alignItems="center">
+      {headArrow(-1)}
+      <Box flexShrink={0} width={Math.max(...m.keys.map(k => cells(m.rows[k].full)))} justifyContent="center">{title}</Box>
+      {headArrow(1)}
     </Box>
+  ) : (
+    <Box flexDirection="row" alignItems="center" gap={1}>{title}</Box>
   )
   const tabs = (
     <Box flexDirection="row" gap={1}>
