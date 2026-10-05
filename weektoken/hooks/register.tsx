@@ -382,6 +382,7 @@ async function useLang($: any): Promise<void> {
 async function openPane($: any): Promise<void> {
   await $.ui.open({ id: PANE, title: 'WeekToken' })
   await update($, paneOpenA, () => true)
+  await update($, viewA, v => ({ ...(v ?? DEFAULT_VIEW), explore: false }))
 }
 
 /** 横条上的「详情」:面板开着且在最前面就收起,否则打开(或切到最前面)。按下时问引擎,不靠记的状态 */
@@ -411,7 +412,7 @@ async function setView($: any, fn: (v: PaneView) => PaneView): Promise<void> {
  */
 async function selectQuota($: any, k: string): Promise<void> {
   await update($, bandKeyA, () => k)
-  await update($, viewA, v => ({ ...(v ?? DEFAULT_VIEW), key: k, offset: 0, pick: null }))
+  await update($, viewA, v => ({ ...(v ?? DEFAULT_VIEW), key: k, offset: 0, explore: false }))
   await $.store.set('bandKey', k)
   await $.store.set('view', { key: k })
   await refreshBand($)
@@ -811,7 +812,7 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
     <Box flexDirection="row" alignItems="center" gap={1} flexWrap="wrap">
       {quotaPick}
       {ranges.map(r => (
-        <Button key={`range-${r}`} label={P.rangeLabel(r)} variant={view.range === r ? 'primary' : 'secondary'} onPress={paneAct(`range-${r}`, () => setView($, v => ({ ...v, range: r, offset: 0, pick: null })))} />
+        <Button key={`range-${r}`} label={P.rangeLabel(r)} variant={view.range === r ? 'primary' : 'secondary'} onPress={paneAct(`range-${r}`, () => setView($, v => ({ ...v, range: r, offset: 0, explore: false })))} />
       ))}
     </Box>
   )
@@ -833,32 +834,16 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
       </Box>
     )
   }
-  // 「近一月 / 全部」:下拉选一个窗口细看(新的在前),它在图里加粗,说明换成它的日期和峰值。
-  // 不用鼠标悬停:那要可交互的框,而框会随横条、面板重画而闪
+  // 「近一月 / 全部」平时是普通图片(不随横条、面板重画而闪);鼠标移到图上,左上角浮出「逐条查看」,
+  // 点了才换成可悬停的框:指到哪条线,那条加粗、标出日期和峰值,其余变淡
   const W = row.len.seconds
-  const peakText = (en: P.OverlayEntry) => L(`峰值 ${Math.round(en.series.peak * 100)}%`, `peak ${Math.round(en.series.peak * 100)}%`)
-  const picked = view.range !== 'current' && view.pick != null ? o.entries.find(en => en.series.reset === view.pick) : undefined
-  const windowPick = view.range !== 'current' && o.entries.length > 1 && Select ? (
-    <Select
-      key="window"
-      options={[
-        { value: 'none', label: L('全部窗口', 'All windows') },
-        ...[...o.entries].reverse().map(en => ({ value: String(en.series.reset), label: `${P.windowLabel(en.series.reset, W, en.isCurrent)} · ${peakText(en)}` })),
-      ]}
-      value={picked ? String(picked.series.reset) : 'none'}
-      onSelect={(v: string) => quiet(setView($, vv => ({ ...vv, pick: v === 'none' ? null : Number(v) })))}
-    />
-  ) : null
-  const caption = picked
-    ? `${P.windowLabel(picked.series.reset, W, picked.isCurrent)} · ${peakText(picked)}${picked.series.peak >= 1 ? L('，用完了', ', ran out') : ''}`
-    : P.overlayCaption(o)
+  const caption = P.overlayCaption(o)
   if (e.surface === 'terminal') {
     const s = focused!.series
     return (
       <Box flexDirection="column" gap={1}>
         {rangeRow}
         {nav}
-        {windowPick}
         <Text>{L(`峰值 ${Math.round(s.peak * 100)}%`, `Peak ${Math.round(s.peak * 100)}%`)}</Text>
         {caption ? <Text dimColor wrap="wrap">{caption}</Text> : null}
         <Text dimColor>{L('(曲线图在桌面端显示)', '(The chart shows in the desktop app)')}</Text>
@@ -866,16 +851,44 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
     )
   }
   const title = L(`${row.full} 用量轨迹`, `${row.full} burn-up`)
-  const svg = burnUpSvg({ width: 360, overlay: o, W, status: P.displayStatus(row.d), id: identity(row.key), title, highlight: picked ? picked.series.reset : null })
+  const input = { width: 360, overlay: o, W, status: P.displayStatus(row.d), id: identity(row.key), title }
+  const plain = burnUpSvg(input)
+  // 可悬停的版本多了感应线和标签;它超了上限就不给逐条查看,普通图照常画
+  const live = view.range !== 'current' && o.entries.length > 1 ? burnUpSvg({ ...input, interactive: true }) : null
+  const canExplore = live != null && live.length <= SVG_MAX
+  const exploring = canExplore && !!view.explore
+  const svg = exploring && live ? live : plain
+  const alt = caption ? `${title}. ${caption}` : title
+  // Svg 源码上限 131072 字符,超了整棵树会被引擎拒绝;叠画已限量,这里再兜一次底
+  if (svg.length > SVG_MAX) {
+    return (
+      <Box flexDirection="column" gap={1}>
+        {rangeRow}
+        {nav}
+        <Text dimColor wrap="wrap">{L('这个范围的数据太多，画不下：换「本窗口」或「近一月」看', 'Too much data to draw for this range: try This window or Last month')}</Text>
+      </Box>
+    )
+  }
+  const toggle = (
+    <Button
+      key="explore"
+      label={exploring ? L('✓ 完成', '✓ Done') : L('⤢ 逐条查看', '⤢ Inspect lines')}
+      variant={exploring ? 'primary' : 'secondary'}
+      onPress={paneAct('explore', () => setView($, v => ({ ...v, explore: !exploring })))}
+    />
+  )
+  const chart = canExplore ? (
+    <Box key="chart" flexDirection="column">
+      {exploring ? pic($, e, svg, alt, { isInteractive: true }) : pic($, e, svg, alt, { fluid: true })}
+      <Box position="absolute" top={0} left={4} {...(exploring ? {} : { display: 'none', hover: { display: 'flex' } })}>{toggle}</Box>
+    </Box>
+  ) : pic($, e, svg, alt, { fluid: true })
   return (
     <Box flexDirection="column" gap={1}>
       {rangeRow}
       {nav}
-      {windowPick}
-      {/* Svg 源码上限 131072 字符,超了整棵树会被引擎拒绝;叠画已限量,这里再兜一次底 */}
-      {svg.length <= SVG_MAX ? pic($, e, svg, caption ? `${title}. ${caption}` : title, { fluid: true }) : (
-        <Text dimColor wrap="wrap">{L('这个范围的数据太多，画不下：换「本窗口」或「近一月」看', 'Too much data to draw for this range: try This window or Last month')}</Text>
-      )}
+      {chart}
+      {exploring ? <Text dimColor wrap="wrap">{L('鼠标指到一条线上，看它是哪个窗口、峰值多少', 'Point at a line to see its window and peak')}</Text> : null}
       {caption ? <Text dimColor wrap="wrap">{caption}</Text> : null}
     </Box>
   )
@@ -929,8 +942,8 @@ function drawPane($: any, e: any, samples: readonly Sample[], activity: Activity
   )
   const tabs = (
     <Box flexDirection="row" gap={1}>
-      <Button key="tab-pace" label={L('配速', 'Pace')} {...(term ? { hotkey: '1' } : {})} variant={view.tab === 'pace' ? 'primary' : 'secondary'} onPress={paneAct('tab-pace', () => setView($, v => ({ ...v, tab: 'pace' })))} />
-      <Button key="tab-burnup" label={L('用量轨迹', 'Burn-up')} {...(term ? { hotkey: '2' } : {})} variant={view.tab === 'burnup' ? 'primary' : 'secondary'} onPress={paneAct('tab-burnup', () => setView($, v => ({ ...v, tab: 'burnup' })))} />
+      <Button key="tab-pace" label={L('配速', 'Pace')} {...(term ? { hotkey: '1' } : {})} variant={view.tab === 'pace' ? 'primary' : 'secondary'} onPress={paneAct('tab-pace', () => setView($, v => ({ ...v, tab: 'pace', explore: false })))} />
+      <Button key="tab-burnup" label={L('用量轨迹', 'Burn-up')} {...(term ? { hotkey: '2' } : {})} variant={view.tab === 'burnup' ? 'primary' : 'secondary'} onPress={paneAct('tab-burnup', () => setView($, v => ({ ...v, tab: 'burnup', explore: false })))} />
     </Box>
   )
   return (

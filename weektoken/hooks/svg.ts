@@ -6,7 +6,7 @@
 // 每个 SVG 用由输入算出的唯一 id 给样式和渐变/滤镜做作用域:宿主无论把它当独立图片
 // 还是内联进同一页面,彼此都不会串色。纯函数,只产出字符串。
 
-import { legendDates, windowLabel, type Overlay, type Pace, type Series, type Status } from './pace.ts'
+import { legendDates, windowLabel, type Overlay, type OverlayEntry, type Pace, type Series, type Status } from './pace.ts'
 import { STATUS, type Identity, type Tri } from './theme.ts'
 import { harmonizeHue, hexToOklch, oklchToHex } from './color.ts'
 import { getLang, L } from './i18n.ts'
@@ -218,8 +218,8 @@ export type BurnUpInput = {
   status: Status
   id: Identity
   title: string
-  /** 选中细看的历史窗口(重置时刻):它加粗最亮,其余历史线变淡 */
-  highlight?: number | null
+  /** 逐条查看:画进可交互的框,鼠标移到哪条线上,那条加粗并标出日期和峰值,其余变淡 */
+  interactive?: boolean
 }
 
 const f1 = (n: number) => (Math.round(n * 10) / 10).toString()
@@ -243,7 +243,7 @@ const textWidth = (s: string, size: number) => [...s].reduce((a, ch) => a + (/[\
  * 图例画在同一张图的底部,线型和说明一一对上;宽度按面板常见宽度定,缩放时字也够大。
  */
 export function burnUpSvg(x: BurnUpInput): string {
-  const u = uidOf('u', [x.width, x.W, x.status, x.id, x.title, getLang(), x.overlay.entries.map(e => [e.series.reset, e.series.segments.length, e.series.peak, e.recency]), x.highlight ?? null])
+  const u = uidOf('u', [x.width, x.W, x.status, x.id, x.title, getLang(), x.overlay.entries.map(e => [e.series.reset, e.series.segments.length, e.series.peak, e.recency]), !!x.interactive])
   const Wd = x.width
   const left = 32
   const right = 8
@@ -287,23 +287,54 @@ export function burnUpSvg(x: BurnUpInput): string {
   }
   const entries = x.overlay.entries
   // 历史窗口:按新旧递增不透明度;隔着「无数据」的几段直接连起来(采样稀疏时每个点自成一段,
-  // 只画成段的会一条都画不出来),窗口中途重置处仍断开
-  // 选中了某个窗口:它最后画(压在最上面)、加粗、不透明;其余历史线淡到几乎是背景
-  const hl = x.highlight ?? null
+  // 只画成段的会一条都画不出来),窗口中途重置处仍断开。
+  // 逐条查看时每个窗口一组:一圈看不见的宽感应线(好对准)、原来的线、悬停才出现的标签
+  const hover = !!x.interactive
   const history = entries.slice(0, -1)
-  const ordered = hl == null ? history : [...history.filter(e => e.series.reset !== hl), ...history.filter(e => e.series.reset === hl)]
-  ordered.forEach(e => {
-    const isHl = hl != null && e.series.reset === hl
-    const op = hl == null ? 0.4 + 0.52 * e.recency : isHl ? 1 : 0.16
-    for (const run of joinGaps(e.series)) if (run.length >= 2) p.push(`<polyline points="${poly(run)}" fill="none" stroke="var(--id)" stroke-opacity="${f(op)}" stroke-width="${isHl ? 2.6 : 1.8}" stroke-linecap="round" stroke-linejoin="round"/>`)
+  const TF2 = 10.5
+  // 标签统一画在最上层(不被后画的线压住),靠序号和自己那组对上
+  const labels: string[] = []
+  let gi = 0
+  const tag = (e: OverlayEntry, lp: { elapsed: number; used: number }) => {
+    const text = `${windowLabel(e.series.reset, x.W, e.isCurrent)} · ${L('峰值', 'peak')} ${Math.round(e.series.peak * 100)}%`
+    const pw = textWidth(text, TF2) + 16
+    const px = clamp(X(lp.elapsed) - pw - 6, left, Wd - right - pw)
+    const py = clamp(Y(lp.used) - 26, top, top + h - 18)
+    labels.push(`<g class="lbl l${gi}"><rect x="${f(px)}" y="${f(py)}" width="${f(pw)}" height="18" rx="9" fill="var(--tip-bg)" stroke="var(--tip-bd)"/>` +
+      `<text x="${f(px + pw / 2)}" y="${f(py + 12.5)}" text-anchor="middle" font-size="${TF2}" fill="var(--tip-fg)">${esc(text)}</text></g>`)
+    return `w w${gi++}`
+  }
+  const lastPoint = (runs: { elapsed: number; used: number }[][]) => { const r = runs[runs.length - 1]; return r[r.length - 1] }
+  // 感应线只管好对准(12px 宽),每 4px 留一个整数点就够,源码只多一成左右
+  const coarse = (pts: { elapsed: number; used: number }[]) => {
+    const out: string[] = []
+    let col = NaN
+    pts.forEach((q, i) => {
+      const c = Math.round(X(q.elapsed) / 4)
+      if (c !== col || i === pts.length - 1) { out.push(`${Math.round(X(q.elapsed))},${Math.round(Y(q.used))}`); col = c }
+    })
+    return out.join(' ')
+  }
+  const hits = (runs: { elapsed: number; used: number }[][]) => runs.map(run => `<polyline class="hit" points="${coarse(run)}"/>`).join('')
+  history.forEach(e => {
+    const op = 0.4 + 0.52 * e.recency
+    const runs = joinGaps(e.series).filter(run => run.length >= 2).map(run => ({ run, pts: poly(run) }))
+    const lines = runs.map(({ pts }) => `<polyline class="ln" points="${pts}" fill="none" stroke="var(--id)" stroke-opacity="${f(op)}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`).join('')
+    if (!hover || !runs.length) { p.push(lines); return }
+    p.push(`<g class="${tag(e, lastPoint(runs.map(r => r.run)))}">${hits(runs.map(r => r.run))}${lines}</g>`)
   })
   const fo = x.overlay.focused
   const cur = fo?.isCurrent ? fo.series : null
   if (fo) {
     const s = fo.series
     for (const m of s.midResets) p.push(`<line x1="${f(X(m.before.elapsed))}" x2="${f(X(m.before.elapsed))}" y1="${top}" y2="${f(top + h)}" stroke="var(--ink3)" stroke-dasharray="1 3"/>`)
-    for (const g of s.gaps) p.push(`<line x1="${f(X(g.from.elapsed))}" y1="${f(Y(g.from.used))}" x2="${f(X(g.to.elapsed))}" y2="${f(Y(g.to.used))}" stroke="var(--id)" stroke-opacity=".3" stroke-width="1.5" stroke-dasharray="2 3"/>`)
-    for (const seg of s.segments) if (seg.length >= 2) p.push(`<polyline points="${poly(seg)}" fill="none" stroke="var(--id)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`)
+    const gapLines = s.gaps.map(g => `<line class="gp" x1="${f(X(g.from.elapsed))}" y1="${f(Y(g.from.used))}" x2="${f(X(g.to.elapsed))}" y2="${f(Y(g.to.used))}" stroke="var(--id)" stroke-opacity=".3" stroke-width="1.5" stroke-dasharray="2 3"/>`).join('')
+    const segs = s.segments.filter(seg => seg.length >= 2).map(seg => ({ seg, pts: poly(seg) }))
+    const lines = segs.map(({ pts }) => `<polyline class="ln" points="${pts}" fill="none" stroke="var(--id)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`).join('')
+    // 感应线沿用「接上空隙」的走法:采样稀疏、每段只有一个点时也能指到
+    const joined = joinGaps(s).filter(run => run.length >= 2)
+    if (hover && joined.length) p.push(`<g class="${tag(fo, lastPoint(joined))}">${hits(joined)}${gapLines}${lines}</g>`)
+    else p.push(gapLines, lines)
     if (cur) {
       if (cur.projection) p.push(`<line x1="${f(X(cur.projection.from.elapsed))}" y1="${f(Y(cur.projection.from.used))}" x2="${f(X(cur.projection.to.elapsed))}" y2="${f(Y(cur.projection.to.used))}" stroke="${st.solid}" stroke-opacity=".85" stroke-width="1.5" stroke-dasharray="5 3"/>`)
       const lastSeg = cur.segments[cur.segments.length - 1]
@@ -312,12 +343,11 @@ export function burnUpSvg(x: BurnUpInput): string {
       if (cur.exhaustionAt != null) p.push(`<line x1="${f(X(cur.exhaustionAt))}" x2="${f(X(cur.exhaustionAt))}" y1="${top}" y2="${f(top + h)}" stroke="#D03B3B" stroke-opacity=".7" stroke-dasharray="2 2"/>`)
     }
   }
+  p.push(...labels)
   // 图例:每项的线型与图里那条线一致
   const items: { mark: string; text: string }[] = []
   const dates = legendDates(x.overlay)
-  const hlEntry = hl != null ? history.find(e => e.series.reset === hl) : undefined
-  if (hlEntry) items.push({ mark: `<line x1="0" y1="4" x2="16" y2="4" stroke="var(--id)" stroke-width="2.6" stroke-linecap="round"/>`, text: windowLabel(hlEntry.series.reset, x.W, false) })
-  else if (dates) items.push({ mark: `<rect y="2" width="16" height="4" rx="2" fill="url(#${u}r)"/>`, text: `${dates.from} → ${dates.to}` })
+  if (dates) items.push({ mark: `<rect y="2" width="16" height="4" rx="2" fill="url(#${u}r)"/>`, text: `${dates.from} → ${dates.to}` })
   else items.push({ mark: `<line x1="0" y1="4" x2="16" y2="4" stroke="var(--id)" stroke-width="2.2" stroke-linecap="round"/>`, text: L('用量', 'Usage') })
   items.push({ mark: `<line x1="0" y1="4" x2="16" y2="4" stroke="var(--diag)" stroke-width="1.2" stroke-dasharray="4 3"/>`, text: L('匀速线', 'Even pace') })
   if (cur?.projection) items.push({ mark: `<line x1="0" y1="4" x2="16" y2="4" stroke="${st.solid}" stroke-opacity=".85" stroke-width="1.5" stroke-dasharray="5 3"/>`, text: L('按近期速度', 'Recent rate') })
@@ -333,5 +363,13 @@ export function burnUpSvg(x: BurnUpInput): string {
     lx += iw + 12
   }
   const H = ly + 5
-  return `${open(u, Wd, H)}${themeStyle(u, x.id)}<title>${esc(x.title)}</title>${p.join('')}</svg>`
+  // 逐条查看的样式:悬停的那组加粗、标签出现,其余组变淡;标签不挡鼠标
+  const hoverStyle = hover
+    ? `<style>#${u}{--tip-bg:rgba(255,255,255,.96);--tip-fg:#1d1d1f;--tip-bd:rgba(0,0,0,.14)}` +
+      `@media (prefers-color-scheme: dark){#${u}{--tip-bg:rgba(30,30,32,.94);--tip-fg:#f5f5f7;--tip-bd:rgba(255,255,255,.18)}}` +
+      `#${u} .w .hit{fill:none;stroke:transparent;stroke-width:12;pointer-events:stroke}` +
+      `#${u} .lbl{opacity:0;pointer-events:none}` + labels.map((_, i) => `#${u}:has(.w${i}:hover) .l${i}`).join(',') + `{opacity:1}` +
+      `#${u} .w:hover .ln{stroke-opacity:1;stroke-width:2.6}#${u} .w:hover .gp{stroke-opacity:.85}#${u}:has(.w:hover) .w:not(:hover) .ln{stroke-opacity:.12}</style>`
+    : ''
+  return `${open(u, Wd, H)}${themeStyle(u, x.id)}${hoverStyle}<title>${esc(x.title)}</title>${p.join('')}</svg>`
 }

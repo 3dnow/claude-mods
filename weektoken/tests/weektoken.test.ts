@@ -464,9 +464,9 @@ test('桌面端横条:同一宽度下所有配额对「已过」的取舍一致,
   expect(await at(54)).toEqual([false, false])
 })
 
-test('用量轨迹「近一月」里下拉选一个窗口:它在图里加粗,说明换成它的日期和峰值', async ($, on) => {
+test('用量轨迹「近一月」平时是普通图片,点「逐条查看」才换成可悬停的框;换范围就退出', async ($, on) => {
   const stored = world(on)
-  // 上一个 7 天窗口(已结束)两条采样,峰值 30%;当前窗口再补一条更早的采样
+  // 上一个 7 天窗口(已结束)两条采样,峰值 30%;当前窗口一条
   const prevReset = NOW + 2 * 86400_000 - 7 * 86400_000
   const curReset = NOW + 2 * 86400_000
   stored.samples = [
@@ -477,18 +477,27 @@ test('用量轨迹「近一月」里下拉选一个窗口:它在图里加粗,说
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
   await pane.press({ key: 'tab-burnup' } as any)
+  // 「本窗口」没有逐条查看
+  expect(JSON.stringify(await pane.drawn())).not.toContain('"key":"explore"')
   await pane.press({ key: 'range-month' } as any)
-  const before = JSON.stringify(await pane.drawn())
-  expect(before).toContain('"key":"window"')
-  expect(before).toContain('全部窗口')
-  expect(before).not.toContain('stroke-width=\\"2.6\\"')
-  await pane.select({ key: 'window', value: String(prevReset) } as any)
-  const after = JSON.stringify(await pane.drawn())
-  expect(after).toContain('峰值 30%')
-  expect(after).toContain('stroke-width=\\"2.6\\"')
-  // 换回「本窗口」再回来:选择清掉
-  await pane.press({ key: 'range-current' } as any)
-  await pane.press({ key: 'range-month' } as any)
-  expect(JSON.stringify(await pane.drawn())).not.toContain('stroke-width=\\"2.6\\"')
+  const still = JSON.stringify(await pane.drawn())
+  expect(still).toContain('"key":"explore"')
+  expect(still).toContain('⤢ 逐条查看')
+  expect(still).toContain('"display":"none"')
+  expect(still).not.toContain('"isInteractive":true')
+  expect(still).not.toContain('class=\\"w ')
+  await pane.press({ key: 'explore' } as any)
+  const live = JSON.stringify(await pane.drawn())
+  expect(live).toContain('"isInteractive":true')
+  expect(live).toContain('class=\\"w w0\\"')
+  expect(live).toContain('峰值 30%')
+  expect(live).toContain('✓ 完成')
+  expect(live).not.toContain('"display":"none"')
+  // 再按一下退出
+  await pane.press({ key: 'explore' } as any)
+  expect(JSON.stringify(await pane.drawn())).not.toContain('"isInteractive":true')
+  // 换范围自动退出
+  await pane.press({ key: 'explore' } as any)
+  await pane.press({ key: 'range-all' } as any)
+  expect(JSON.stringify(await pane.drawn())).not.toContain('"isInteractive":true')
 })
-
