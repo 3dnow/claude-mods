@@ -553,15 +553,28 @@ const bandNameWidth = (show: BandShow, term: boolean) =>
  * 终端横条的排法:文字照实际宽度排,进度条吃剩下的格子(最多 48)。
  * 不够 8 格先去掉「已过」那段,还不够就不画进度条——绝不让这一行折成两行。
  */
-function termBandLayout(show: BandShow, cols: number): { bar: number; withElapsed: boolean } {
+/**
+ * 横条怎么排:进度条吃剩下的格子,不够时先去掉「已过」那段,再不够就不画进度条(终端)。
+ * 「放不放得下」按最坏情况算:最长的配额名、「100%」这种最宽的读数、两种按钮文字里较长的那个。
+ * 只看横条多宽,不看当前配额的数字——同一宽度下所有配额表现一致,不会这个显示全、那个被截成「elap…」。
+ * 终端按字符格精确算;桌面端字体不等宽、原生按钮带内边距,箭头和按钮按估计的格数算,进度条至少留 BAR_MIN 格。
+ */
+const BAR_MIN = 6
+function bandLayout(show: BandShow, cols: number, term: boolean): { bar: number; withElapsed: boolean } {
   const t = bandTexts(show)
+  const used = cells(L('· 已用 100%', '· 100% used'))
+  const elapsed = cells(L('· 已过 100%', '· 100% elapsed'))
+  const buttons = Math.max(cells(t.details), cells(t.closeDetails)) + cells(t.hide)
   const width = (withElapsed: boolean) => {
-    const parts = [bandNameWidth(show, true), ...[t.used, withElapsed ? t.elapsed : null].filter((s): s is string => !!s).map(cells)]
-    if (show.keys.length > 1) parts.push(4, 4) // 「h: ❮」「l: ❯」
+    const parts = [bandNameWidth(show, term), used, ...(withElapsed ? [elapsed] : [])]
+    // 终端:「h: ❮」「l: ❯」各 4 格;桌面端:原生按钮带内边距,各按 3 格
+    if (show.keys.length > 1) parts.push(term ? 4 : 3, term ? 4 : 3)
     const line = parts.reduce((a, b) => a + b, 0) + parts.length - 1
-    // 行、进度条、撑开的空白、详情、隐藏之间各空一格;引擎在最后画收起标记「 [-]」,再留一格余量
-    return line + cells(t.details) + cells(t.hide) + 4 + 5
+    // 终端:行、进度条、撑开的空白、详情、隐藏之间各空一格,引擎最后画「 [-]」再留一格;
+    // 桌面端:两个按钮的内边距各算 2 格,行、进度条、两个按钮之间各空一格
+    return line + buttons + (term ? 4 + 5 : 4 + 3)
   }
+  if (!term) return { bar: 1, withElapsed: !!t.elapsed && width(true) + BAR_MIN <= cols }
   for (const withElapsed of [true, false]) {
     const bar = Math.min(48, cols - width(withElapsed) - 1)
     if (bar >= 8 || (!withElapsed && bar >= 4)) return { bar, withElapsed: withElapsed && t.elapsed != null }
@@ -626,9 +639,9 @@ function drawBand($: any, e: any, show: BandShow, paneOpen = false) {
     : L(`${full}：已用 ${show.used}%，已过 ${show.elapsed}%`, `${full}: ${show.used}% used, ${show.elapsed}% elapsed`)
   const t = bandTexts(show)
   // 一行字 + 进度条;详情进面板,隐藏后从面板恢复。
-  // 桌面端:字先按自身宽度排好,进度条从 0 起只吃剩下的空间(至少占横条的 15%);再窄,才轮到字从「已过」那段开始截。
+  // 桌面端:字先按自身宽度排好,进度条从 0 起只吃剩下的空间(至少 BAR_MIN 格);放不下「已过」就整段不显示(见 bandLayout)。
   // 终端:进度条是定宽的字,按 bodyColumns(面板停靠在旁边时是对话那一栏的宽度)算好再排
-  const lay = term ? termBandLayout(show, e.props?.bodyColumns ?? 80) : { bar: 1, withElapsed: true }
+  const lay = bandLayout(show, e.props?.bodyColumns ?? (term ? 80 : 120), term)
   const pace = used != null && elapsed != null ? ({ used, elapsed } as P.Pace) : null
   return (
     <Box flexDirection="row" alignItems="center" gap={1}>
@@ -636,7 +649,7 @@ function drawBand($: any, e: any, show: BandShow, paneOpen = false) {
       {term ? (
         lay.bar > 0 ? <Box flexShrink={0}>{termBar($, e, show.key, used, elapsed, show.status, lay.bar)}</Box> : null
       ) : (
-        <Box width={0} flexGrow={1} flexShrink={1} minWidth="15%">
+        <Box width={0} flexGrow={1} flexShrink={1} minWidth={BAR_MIN}>
           {pic($, e, bandBarSvg(pace, used, show.status, identity(show.key), label, 'fluid'), label, { fillHeight: 14 })}
         </Box>
       )}

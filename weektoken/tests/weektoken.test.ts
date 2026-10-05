@@ -448,3 +448,19 @@ test('横条上的「详情」再按一下收起面板,按钮写「收起」', a
   expect(JSON.stringify(await band.drawn())).toContain('"label":"详情"')
 })
 
+test('桌面端横条:同一宽度下所有配额对「已过」的取舍一致,放不下就整段不显示', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const at = async (cols: number) => {
+    const band = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: { ...BAND, bodyColumns: cols } as any })
+    const seven = JSON.stringify(await band.drawn())
+    await band.press({ key: 'band-next' } as any)
+    const five = JSON.stringify(await band.drawn())
+    await band.press({ key: 'band-prev' } as any)
+    // 只看横条上那段字(进度条图片的替代文字里也有「已过」)
+    return [seven.includes('"· 已过 '), five.includes('"· 已过 ')]
+  }
+  expect(await at(100)).toEqual([true, true])
+  expect(await at(58)).toEqual([false, false])
+})
+
