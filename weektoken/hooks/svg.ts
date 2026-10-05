@@ -71,61 +71,106 @@ export type RingsInput = {
   center: { kind: 'rate'; text: string } | { kind: 'pct'; text: string } | { kind: 'none' }
   label: string
   title: string
+  /** 环右边一列读数:小号标签在上、数字在下;accent 的那个用配额色。空数组只画环 */
+  readings: { label: string; value: string; accent?: boolean }[]
 }
 
-/** 配速环:外环 = 用量 U(深→亮的角向渐变,尖端最亮 + 端帽),内环 = 时间 T(状态色);超速时光晕呼吸 */
+/**
+ * 配速环,和横条同一套画法(只用配额自己的色系):
+ * · 外环 = 用量 U:配额色角向渐变;没超速时从已用到已过画同色淡斜线(余量);
+ *   超速时超出时间的一段画同色深一档 + 浅斜线;用尽时那段换协调过的暖色。
+ * · 内环 = 时间 T:中性灰细环。两环都细、间距收紧,把中间留给数字。
+ * · 中心:数字和状态当成一块垂直居中,字号按内环里面的直径定。
+ * · 右边一列读数,字号分层(原生 Text 只有一种字号)。
+ */
 export function ringsSvg(x: RingsInput): string {
   const u = uidOf('r', x)
   const d = 156
-  const pad = 14
-  const size = d + pad * 2
-  const c = size / 2
-  const rw = 0.088 * d
-  const rOuter = (d - rw) / 2
-  const innerD = d - 2 * (2 * rw)
-  const rwIn = 0.5 * rw
-  const rInner = (innerD - rwIn) / 2
-  const st = STATUS[x.status]
+  const c = d / 2
+  const rw = 0.075 * d
+  const gap = 0.03 * d
+  const rwIn = 0.035 * d
+  const rO = (d - rw) / 2
+  const rI = rO - rw / 2 - gap - rwIn / 2
+  const Di = 2 * (rI - rwIn / 2) * 0.92
   const U = x.used == null ? 0 : clamp(x.used, 0, 1)
-  const T = x.elapsed == null ? 0 : clamp(x.elapsed, 0, 1)
+  const T = x.elapsed == null ? null : clamp(x.elapsed, 0, 1)
+  const over = T != null && U > T
+  const exhausted = x.status === 'exhausted'
+  // 斜线:45°、周期 5px、线宽 2px(同横条)
+  const stripes = (id: string, back: string, backOp: number, line: string, lineOp: number) =>
+    `<pattern id="${id}" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
+    `<rect width="5" height="5" fill="${back}" fill-opacity="${backOp}"/><rect width="2" height="5" fill="${line}" fill-opacity="${lineOp}"/></pattern>`
   const parts: string[] = []
-  // 光晕(只有超速才呼吸)
-  const pulse = x.status === 'overPace'
-    ? `<animate attributeName="opacity" values=".75;1;.75" dur="3.2s" repeatCount="indefinite"/><animateTransform attributeName="transform" type="scale" additive="sum" values="1;1.06;1" dur="3.2s" repeatCount="indefinite"/>`
-    : ''
-  parts.push(`<defs><radialGradient id="${u}g"><stop offset="16%" stop-color="var(--id)" stop-opacity=".14"/><stop offset="100%" stop-color="var(--id)" stop-opacity="0"/></radialGradient><filter id="${u}b" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter><filter id="${u}s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="3.5" flood-color="var(--id)" flood-opacity=".45"/></filter><linearGradient id="${u}t" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--id)"/><stop offset="1" stop-color="var(--id-e)"/></linearGradient></defs>`)
-  parts.push(`<g transform="translate(${f(c)} ${f(c)})"><g><circle r="${f(0.62 * d)}" fill="url(#${u}g)" filter="url(#${u}b)"/>${pulse}</g></g>`)
+  parts.push(`<defs>${stripes(u + 'm', 'var(--id)', 0.1, 'var(--id)', 0.55)}${stripes(u + 'x', 'var(--deep)', 1, 'var(--id-s)', 0.35)}</defs>`)
   // 内环:时间
-  parts.push(`<circle cx="${f(c)}" cy="${f(c)}" r="${f(rInner)}" fill="none" stroke="var(--track)" stroke-width="${f(rwIn)}"/>`)
-  if (T > 0.002) parts.push(`<path d="${arcPath(c, c, rInner, 0, Math.min(T, 0.9999))}" fill="none" stroke="${st.solid}" stroke-width="${f(rwIn)}" stroke-linecap="round"/>`)
-  // 外环:用量(分段近似角向渐变,尖端最亮)
-  parts.push(`<circle cx="${f(c)}" cy="${f(c)}" r="${f(rOuter)}" fill="none" stroke="var(--track)" stroke-width="${f(rw)}"/>`)
-  if (U > 0.002) {
-    const span = Math.max(0.02, Math.min(U, 0.9999))
-    const n = Math.max(2, Math.ceil(span * 72))
-    const segs: string[] = []
-    for (let i = 0; i < n; i++) {
-      const p0 = (span * i) / n
-      const p1 = (span * (i + 1)) / n + (i < n - 1 ? 0.002 : 0)
-      segs.push(`<path d="${arcPath(c, c, rOuter, p0, p1)}" fill="none" stroke="${mix(x.id.light.end, x.id.light.start, (i + 1) / n)}" stroke-width="${f(rw)}"/>`)
+  parts.push(`<circle cx="${f(c)}" cy="${f(c)}" r="${f(rI)}" fill="none" stroke="var(--track)" stroke-width="${f(rwIn)}"/>`)
+  if (T != null && T > 0.002) parts.push(`<path d="${arcPath(c, c, rI, 0, Math.min(T, 0.9999))}" fill="none" stroke="var(--time)" stroke-width="${f(rwIn)}" stroke-linecap="round"/>`)
+  // 外环:轨道、余量、用量、超出
+  parts.push(`<circle cx="${f(c)}" cy="${f(c)}" r="${f(rO)}" fill="none" stroke="var(--track)" stroke-width="${f(rw)}"/>`)
+  if (T != null && T > U) parts.push(`<path d="${arcPath(c, c, rO, Math.max(0, U - 0.01), Math.min(T, 0.9999))}" fill="none" stroke="url(#${u}m)" stroke-width="${f(rw)}"/>`)
+  const upto = over ? (T as number) : U
+  if (upto > 0.002) {
+    // 角向渐变用分段近似;深浅两套色值各画一组,按外观显示其一
+    const n = Math.max(2, Math.ceil(upto * 72))
+    const grad = (t: Tri, cls: string) => {
+      const segs: string[] = []
+      for (let i = 0; i < n; i++) {
+        const p0 = (upto * i) / n
+        const p1 = (upto * (i + 1)) / n + (i < n - 1 ? 0.002 : 0)
+        segs.push(`<path d="${arcPath(c, c, rO, p0, Math.min(p1, 0.9999))}" fill="none" stroke="${mix(t.end, t.start, (i + 1) / n)}" stroke-width="${f(rw)}"/>`)
+      }
+      return `<g class="${cls}">${segs.join('')}</g>`
     }
-    const [sx, sy] = polar(c, c, rOuter, 0)
-    parts.push(`<g filter="url(#${u}s)">${segs.join('')}<circle cx="${f(sx)}" cy="${f(sy)}" r="${f(rw / 2)}" fill="${x.id.light.end}"/></g>`)
-    if (U > 0.015) {
-      const [ex, ey] = polar(c, c, rOuter, span)
-      parts.push(`<circle cx="${f(ex)}" cy="${f(ey)}" r="${f(rw / 2)}" fill="${x.id.light.start}"/>`)
-      parts.push(`<circle cx="${f(ex)}" cy="${f(ey - 0.16 * rw)}" r="${f(0.17 * rw)}" fill="#fff" fill-opacity=".5"/>`)
+    parts.push(grad(x.id.light, 'lt'), grad(x.id.dark, 'dk'))
+    const [sx, sy] = polar(c, c, rO, 0)
+    parts.push(`<circle cx="${f(sx)}" cy="${f(sy)}" r="${f(rw / 2)}" fill="var(--id-e)"/>`)
+    if (!over) {
+      const [ex, ey] = polar(c, c, rO, Math.min(upto, 0.9999))
+      parts.push(`<circle cx="${f(ex)}" cy="${f(ey)}" r="${f(rw / 2)}" fill="var(--id-s)"/>`)
     }
   }
-  // 中心:倍率 R / 用量百分比 / —,下面是状态标签
+  if (over) {
+    const paint = exhausted ? 'var(--warm)' : `url(#${u}x)`
+    parts.push(`<path d="${arcPath(c, c, rO, T as number, Math.min(U, 0.9999))}" fill="none" stroke="${paint}" stroke-width="${f(rw)}"/>`)
+    if (U < 0.999) {
+      const [ex, ey] = polar(c, c, rO, U)
+      parts.push(`<circle cx="${f(ex)}" cy="${f(ey)}" r="${f(rw / 2)}" fill="${paint}"/>`)
+    }
+  }
+  // 中心:数字 + 状态,当成一块垂直居中
+  const em = 0.25 * Di
+  const lf = Math.max(10, 0.1 * Di)
+  const lead = 0.07 * Di
+  const nb = c - (0.72 * em + lead + 0.72 * lf) / 2 + 0.72 * em
   if (x.center.kind === 'rate') {
-    parts.push(`<text x="${f(c)}" y="${f(c + 6)}" text-anchor="middle" font-size="${f(0.215 * d)}" font-weight="600" fill="url(#${u}t)" style="font-variant-numeric:tabular-nums">${esc(x.center.text)}<tspan font-size="${f(0.13 * d)}" font-weight="500" fill="var(--id)" fill-opacity=".65" dx="1">×</tspan></text>`)
+    parts.push(`<text x="${f(c)}" y="${f(nb)}" text-anchor="middle" font-size="${f(em)}" font-weight="600" fill="var(--ink)" style="font-variant-numeric:tabular-nums;letter-spacing:-.02em">${esc(x.center.text)}<tspan font-size="${f(em * 0.55)}" font-weight="500" fill="var(--ink3)" dx="1.5">×</tspan></text>`)
   } else {
     const t = x.center.kind === 'pct' ? x.center.text : '—'
-    parts.push(`<text x="${f(c)}" y="${f(c + 6)}" text-anchor="middle" font-size="${f(0.2 * d)}" font-weight="600" fill="${x.center.kind === 'pct' ? 'var(--ink2)' : 'var(--ink3)'}" style="font-variant-numeric:tabular-nums">${esc(t)}</text>`)
+    parts.push(`<text x="${f(c)}" y="${f(nb)}" text-anchor="middle" font-size="${f(em)}" font-weight="600" fill="${x.center.kind === 'pct' ? 'var(--ink)' : 'var(--ink3)'}" style="font-variant-numeric:tabular-nums;letter-spacing:-.02em">${esc(t)}</text>`)
   }
-  parts.push(`<text x="${f(c)}" y="${f(c + 26)}" text-anchor="middle" font-size="${f(0.072 * d)}" font-weight="500" fill="var(--ink2)">${esc(x.label)}</text>`)
-  return `${open(u, size, size)}${themeStyle(u, x.id)}<title>${esc(x.title)}</title>${parts.join('')}</svg>`
+  parts.push(`<text x="${f(c)}" y="${f(nb + lead + 0.72 * lf)}" text-anchor="middle" font-size="${f(lf)}" font-weight="500" fill="var(--ink2)">${esc(x.label)}</text>`)
+  // 右边一列读数
+  const LS = 10
+  const VS = 22
+  const rx = d + 24
+  // 中文标签 10px 太小,放到 11px;宽度估算偏窄(% 和粗体数字更宽),留余量
+  const lsOf = (t: string) => (/[\u2E80-\u9FFF]/.test(t) ? 11 : LS)
+  const colW = x.readings.reduce((a, r) => Math.max(a, textWidth(r.value, VS) * 1.15, textWidth(r.label, lsOf(r.label)) * 1.2), 0) + 6
+  const step = 46
+  const top = (d - (x.readings.length * step - 8)) / 2
+  x.readings.forEach((r, i) => {
+    const y = top + i * step
+    const col = r.accent ? (exhausted ? 'var(--warm)' : 'var(--id)') : 'var(--ink)'
+    parts.push(`<text x="${f(rx)}" y="${f(y + 9)}" font-size="${lsOf(r.label)}" font-weight="600" fill="var(--ink3)" style="letter-spacing:.09em">${esc(r.label)}</text>` +
+      `<text x="${f(rx)}" y="${f(y + 33)}" font-size="${VS}" font-weight="600" fill="${col}" style="font-variant-numeric:tabular-nums;letter-spacing:-.01em">${esc(r.value)}</text>`)
+  })
+  const W = x.readings.length ? Math.ceil(rx + colW) : d
+  const ol = overTones(x.id.light)
+  const od = overTones(x.id.dark)
+  const vars = `<style>#${u}{--ink:#1d1d1f;--time:#8E8E93;--deep:${ol.deep};--warm:${ol.warm}}#${u} .dk{display:none}` +
+    `@media (prefers-color-scheme: dark){#${u}{--ink:#f5f5f7;--deep:${od.deep};--warm:${od.warm}}#${u} .lt{display:none}#${u} .dk{display:inline}}</style>`
+  return `${open(u, W, d)}${themeStyle(u, x.id)}${vars}<title>${esc(x.title)}</title>${parts.join('')}</svg>`
 }
 
 /**

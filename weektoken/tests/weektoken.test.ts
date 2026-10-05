@@ -501,3 +501,25 @@ test('用量轨迹「近一月」平时是普通图片,点「逐条查看」才�
   await pane.press({ key: 'range-all' } as any)
   expect(JSON.stringify(await pane.drawn())).not.toContain('"isInteractive":true')
 })
+
+test('配速页:三个读数画进圆环图里;没超速画同色余量斜线,超速段同色深一档加斜线;不再有光晕', async ($, on) => {
+  const stored = world(on)
+  on('session.measure', (_$: unknown, e: { changed: unknown }) => ({ changed: e.changed }))
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  const under = JSON.stringify(await pane.drawn())
+  // 读数在图里(小号标签在上、数字在下),原生文字那一行没了
+  expect(under).toContain('>已用</text>')
+  expect(under).toContain('>距重置</text>')
+  expect(under).not.toContain('"已过"')
+  expect(under).not.toContain('feGaussianBlur')
+  expect(under).not.toContain('<animate')
+  expect(under).toMatch(/stroke=\\"url\(#wtr[0-9a-z]+m\)\\"/)
+  expect(under).not.toMatch(/url\(#wtr[0-9a-z]+x\)/)
+  // 7 天用了 90%、时间才过 71%:超出的一段画成深色斜线
+  stored.__limits = [{ kind: 'seven_day', percentUsed: 90, resetsAt: iso(NOW + 2 * 86400_000) }]
+  await $.session.measure({ context: { window: 200000 }, rateLimits: stored.__limits, changed: ['rateLimits'] } as any)
+  const over = JSON.stringify(await pane.drawn())
+  expect(over).toMatch(/url\(#wtr[0-9a-z]+x\)/)
+  expect(over).toContain('>90%</text>')
+})

@@ -18,7 +18,6 @@ import { bandBarSvg, burnUpSvg, creditSvg, ringsSvg } from './svg.ts'
 
 const PANE = 'weektoken'
 const DEFAULT_VIEW: PaneView = { key: null, tab: 'pace', range: 'current', offset: 0 }
-const ORANGE = '#FF9500'
 
 const samplesA = atom({ plugin: 'weektoken', key: 'samples' } as const, [] as Sample[])
 const viewA = atom({ plugin: 'weektoken', key: 'view' } as const, DEFAULT_VIEW)
@@ -725,19 +724,19 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
   const label = P.accessibilityLabel(d, row.full)
   const second = pace ? P.forecast(pace) : P.displayDetail(d)
   const trend = trendOf(samples, row)
-  const trendLine = trend && trend !== 'steady'
-    ? <Text color={trend === 'accelerating' ? STATUS.overPace.solid : undefined} dimColor={trend !== 'accelerating'}>{trendText(trend)}</Text>
-    : null
+  // 趋势只是补充说明,不另加颜色(琥珀和配额蓝几乎互补,放在一起最显廉价)
+  const trendLine = trend && trend !== 'steady' ? <Text dimColor>{trendText(trend)}</Text> : null
   const showBadge = !P.isVerifiedByData(row.len.source)
   const canSwitch = m.keys.length > 1
   const target = (offset: number) => P.neighbor(row.key, m.keys, offset) as string
+  // 读数取整,和横条一致
   const metrics = pace
     ? [
-        { v: `${(pace.used * 100).toFixed(1)}%`, l: L('已用', 'Used'), c: identityText(row.key) },
-        { v: `${(pace.elapsed * 100).toFixed(1)}%`, l: L('已过', 'Elapsed'), c: undefined },
-        { v: P.formatDuration(pace.timeToReset), l: L('后重置', 'Resets in'), c: undefined },
+        { v: `${Math.round(pace.used * 100)}%`, l: L('已用', 'Used'), accent: true },
+        { v: `${Math.round(pace.elapsed * 100)}%`, l: L('已过', 'Elapsed') },
+        { v: P.formatDuration(pace.timeToReset), l: L('距重置', 'Resets in') },
       ]
-    : d.kind === 'usageOnly' ? [{ v: `${d.obs.u.toFixed(1)}%`, l: L('已用', 'Used'), c: undefined }] : []
+    : d.kind === 'usageOnly' ? [{ v: `${Math.round(d.obs.u)}%`, l: L('已用', 'Used'), accent: true }] : []
 
   if (term) {
     return (
@@ -751,7 +750,7 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
         {second ? <Text dimColor wrap="wrap">{second}</Text> : null}
         {trendLine}
         <Text>{metrics.map(x => `${x.l} ${x.v}`).join('   ')}</Text>
-        {showBadge ? <Text color={ORANGE}>？{P.windowNote(row.len)}</Text> : null}
+        {showBadge ? <Text dimColor>？{P.windowNote(row.len)}</Text> : null}
         {canSwitch ? (
           <Box flexDirection="row" gap={2}>
             <Button key="prev" label={`‹ ${m.rows[target(-1)]?.full ?? ''}`} hotkey="h" onPress={paneAct('prev', () => stepKey($, m.keys, row.key, -1))} />
@@ -771,7 +770,7 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
       <Box flexDirection="row" alignItems="center" width="100%">
         {canSwitch ? switchButton($, e, m, row.key, -1) : null}
         <Box flexGrow={1} />
-        {pic($, e, ringsSvg({ used, elapsed: pace?.elapsed ?? null, status: st, id, center, label: P.displayLabel(d), title: label }), label)}
+        {pic($, e, ringsSvg({ used, elapsed: pace?.elapsed ?? null, status: st, id, center, label: P.displayLabel(d), title: label, readings: pace ? metrics.map(x => ({ label: x.l.toUpperCase(), value: x.v, accent: !!x.accent })) : [] }), label)}
         <Box flexGrow={1} />
         {canSwitch ? switchButton($, e, m, row.key, 1) : null}
       </Box>
@@ -780,17 +779,7 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
         {second ? <Text dimColor wrap="wrap">{second}</Text> : null}
         {trendLine}
       </Box>
-      {metrics.length ? (
-        <Box flexDirection="row" gap={3} justifyContent="center">
-          {metrics.map(x => (
-            <Box flexDirection="column" alignItems="center">
-              <Text color={x.c} bold>{x.v}</Text>
-              <Text dimColor>{x.l}</Text>
-            </Box>
-          ))}
-        </Box>
-      ) : null}
-      {showBadge ? <Text color={ORANGE}>？{P.windowNote(row.len)}</Text> : null}
+      {showBadge ? <Text dimColor>？{P.windowNote(row.len)}</Text> : null}
     </Box>
   )
 }
