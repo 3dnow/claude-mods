@@ -9,6 +9,8 @@ export type PaneView = {
   tab: 'pace' | 'burnup'
   range: 'current' | 'month' | 'all'
   offset: number
+  /** 「近一月 / 全部」里选中细看的窗口(重置时刻,毫秒);null = 不选,所有窗口照常画 */
+  pick?: number | null
 }
 
 /** 输入框上方横条:显示 / 隐藏(不占行,从面板恢复) */

@@ -411,7 +411,7 @@ async function setView($: any, fn: (v: PaneView) => PaneView): Promise<void> {
  */
 async function selectQuota($: any, k: string): Promise<void> {
   await update($, bandKeyA, () => k)
-  await update($, viewA, v => ({ ...(v ?? DEFAULT_VIEW), key: k, offset: 0 }))
+  await update($, viewA, v => ({ ...(v ?? DEFAULT_VIEW), key: k, offset: 0, pick: null }))
   await $.store.set('bandKey', k)
   await $.store.set('view', { key: k })
   await refreshBand($)
@@ -811,7 +811,7 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
     <Box flexDirection="row" alignItems="center" gap={1} flexWrap="wrap">
       {quotaPick}
       {ranges.map(r => (
-        <Button key={`range-${r}`} label={P.rangeLabel(r)} variant={view.range === r ? 'primary' : 'secondary'} onPress={paneAct(`range-${r}`, () => setView($, v => ({ ...v, range: r, offset: 0 })))} />
+        <Button key={`range-${r}`} label={P.rangeLabel(r)} variant={view.range === r ? 'primary' : 'secondary'} onPress={paneAct(`range-${r}`, () => setView($, v => ({ ...v, range: r, offset: 0, pick: null })))} />
       ))}
     </Box>
   )
@@ -833,13 +833,32 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
       </Box>
     )
   }
-  const caption = P.overlayCaption(o)
+  // 「近一月 / 全部」:下拉选一个窗口细看(新的在前),它在图里加粗,说明换成它的日期和峰值。
+  // 不用鼠标悬停:那要可交互的框,而框会随横条、面板重画而闪
+  const W = row.len.seconds
+  const peakText = (en: P.OverlayEntry) => L(`峰值 ${Math.round(en.series.peak * 100)}%`, `peak ${Math.round(en.series.peak * 100)}%`)
+  const picked = view.range !== 'current' && view.pick != null ? o.entries.find(en => en.series.reset === view.pick) : undefined
+  const windowPick = view.range !== 'current' && o.entries.length > 1 && Select ? (
+    <Select
+      key="window"
+      options={[
+        { value: 'none', label: L('全部窗口', 'All windows') },
+        ...[...o.entries].reverse().map(en => ({ value: String(en.series.reset), label: `${P.windowLabel(en.series.reset, W, en.isCurrent)} · ${peakText(en)}` })),
+      ]}
+      value={picked ? String(picked.series.reset) : 'none'}
+      onSelect={(v: string) => quiet(setView($, vv => ({ ...vv, pick: v === 'none' ? null : Number(v) })))}
+    />
+  ) : null
+  const caption = picked
+    ? `${P.windowLabel(picked.series.reset, W, picked.isCurrent)} · ${peakText(picked)}${picked.series.peak >= 1 ? L('，用完了', ', ran out') : ''}`
+    : P.overlayCaption(o)
   if (e.surface === 'terminal') {
     const s = focused!.series
     return (
       <Box flexDirection="column" gap={1}>
         {rangeRow}
         {nav}
+        {windowPick}
         <Text>{L(`峰值 ${Math.round(s.peak * 100)}%`, `Peak ${Math.round(s.peak * 100)}%`)}</Text>
         {caption ? <Text dimColor wrap="wrap">{caption}</Text> : null}
         <Text dimColor>{L('(曲线图在桌面端显示)', '(The chart shows in the desktop app)')}</Text>
@@ -847,11 +866,12 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
     )
   }
   const title = L(`${row.full} 用量轨迹`, `${row.full} burn-up`)
-  const svg = burnUpSvg({ width: 360, overlay: o, W: row.len.seconds, status: P.displayStatus(row.d), id: identity(row.key), title })
+  const svg = burnUpSvg({ width: 360, overlay: o, W, status: P.displayStatus(row.d), id: identity(row.key), title, highlight: picked ? picked.series.reset : null })
   return (
     <Box flexDirection="column" gap={1}>
       {rangeRow}
       {nav}
+      {windowPick}
       {/* Svg 源码上限 131072 字符,超了整棵树会被引擎拒绝;叠画已限量,这里再兜一次底 */}
       {svg.length <= SVG_MAX ? pic($, e, svg, caption ? `${title}. ${caption}` : title, { fluid: true }) : (
         <Text dimColor wrap="wrap">{L('这个范围的数据太多，画不下：换「本窗口」或「近一月」看', 'Too much data to draw for this range: try This window or Last month')}</Text>

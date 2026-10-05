@@ -6,7 +6,7 @@
 // 每个 SVG 用由输入算出的唯一 id 给样式和渐变/滤镜做作用域:宿主无论把它当独立图片
 // 还是内联进同一页面,彼此都不会串色。纯函数,只产出字符串。
 
-import { legendDates, type Overlay, type Pace, type Series, type Status } from './pace.ts'
+import { legendDates, windowLabel, type Overlay, type Pace, type Series, type Status } from './pace.ts'
 import { STATUS, type Identity, type Tri } from './theme.ts'
 import { harmonizeHue, hexToOklch, oklchToHex } from './color.ts'
 import { getLang, L } from './i18n.ts'
@@ -218,6 +218,8 @@ export type BurnUpInput = {
   status: Status
   id: Identity
   title: string
+  /** 选中细看的历史窗口(重置时刻):它加粗最亮,其余历史线变淡 */
+  highlight?: number | null
 }
 
 const f1 = (n: number) => (Math.round(n * 10) / 10).toString()
@@ -241,7 +243,7 @@ const textWidth = (s: string, size: number) => [...s].reduce((a, ch) => a + (/[\
  * 图例画在同一张图的底部,线型和说明一一对上;宽度按面板常见宽度定,缩放时字也够大。
  */
 export function burnUpSvg(x: BurnUpInput): string {
-  const u = uidOf('u', [x.width, x.W, x.status, x.id, x.title, getLang(), x.overlay.entries.map(e => [e.series.reset, e.series.segments.length, e.series.peak, e.recency])])
+  const u = uidOf('u', [x.width, x.W, x.status, x.id, x.title, getLang(), x.overlay.entries.map(e => [e.series.reset, e.series.segments.length, e.series.peak, e.recency]), x.highlight ?? null])
   const Wd = x.width
   const left = 32
   const right = 8
@@ -286,9 +288,14 @@ export function burnUpSvg(x: BurnUpInput): string {
   const entries = x.overlay.entries
   // 历史窗口:按新旧递增不透明度;隔着「无数据」的几段直接连起来(采样稀疏时每个点自成一段,
   // 只画成段的会一条都画不出来),窗口中途重置处仍断开
-  entries.slice(0, -1).forEach(e => {
-    const op = 0.4 + 0.52 * e.recency
-    for (const run of joinGaps(e.series)) if (run.length >= 2) p.push(`<polyline points="${poly(run)}" fill="none" stroke="var(--id)" stroke-opacity="${f(op)}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`)
+  // 选中了某个窗口:它最后画(压在最上面)、加粗、不透明;其余历史线淡到几乎是背景
+  const hl = x.highlight ?? null
+  const history = entries.slice(0, -1)
+  const ordered = hl == null ? history : [...history.filter(e => e.series.reset !== hl), ...history.filter(e => e.series.reset === hl)]
+  ordered.forEach(e => {
+    const isHl = hl != null && e.series.reset === hl
+    const op = hl == null ? 0.4 + 0.52 * e.recency : isHl ? 1 : 0.16
+    for (const run of joinGaps(e.series)) if (run.length >= 2) p.push(`<polyline points="${poly(run)}" fill="none" stroke="var(--id)" stroke-opacity="${f(op)}" stroke-width="${isHl ? 2.6 : 1.8}" stroke-linecap="round" stroke-linejoin="round"/>`)
   })
   const fo = x.overlay.focused
   const cur = fo?.isCurrent ? fo.series : null
@@ -308,7 +315,9 @@ export function burnUpSvg(x: BurnUpInput): string {
   // 图例:每项的线型与图里那条线一致
   const items: { mark: string; text: string }[] = []
   const dates = legendDates(x.overlay)
-  if (dates) items.push({ mark: `<rect y="2" width="16" height="4" rx="2" fill="url(#${u}r)"/>`, text: `${dates.from} → ${dates.to}` })
+  const hlEntry = hl != null ? history.find(e => e.series.reset === hl) : undefined
+  if (hlEntry) items.push({ mark: `<line x1="0" y1="4" x2="16" y2="4" stroke="var(--id)" stroke-width="2.6" stroke-linecap="round"/>`, text: windowLabel(hlEntry.series.reset, x.W, false) })
+  else if (dates) items.push({ mark: `<rect y="2" width="16" height="4" rx="2" fill="url(#${u}r)"/>`, text: `${dates.from} → ${dates.to}` })
   else items.push({ mark: `<line x1="0" y1="4" x2="16" y2="4" stroke="var(--id)" stroke-width="2.2" stroke-linecap="round"/>`, text: L('用量', 'Usage') })
   items.push({ mark: `<line x1="0" y1="4" x2="16" y2="4" stroke="var(--diag)" stroke-width="1.2" stroke-dasharray="4 3"/>`, text: L('匀速线', 'Even pace') })
   if (cur?.projection) items.push({ mark: `<line x1="0" y1="4" x2="16" y2="4" stroke="${st.solid}" stroke-opacity=".85" stroke-width="1.5" stroke-dasharray="5 3"/>`, text: L('按近期速度', 'Recent rate') })
