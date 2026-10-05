@@ -461,6 +461,6 @@ test('桌面端横条:同一宽度下所有配额对「已过」的取舍一致,
     return [seven.includes('"· 已过 '), five.includes('"· 已过 ')]
   }
   expect(await at(100)).toEqual([true, true])
-  expect(await at(58)).toEqual([false, false])
+  expect(await at(54)).toEqual([false, false])
 })
 

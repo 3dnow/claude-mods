@@ -544,10 +544,10 @@ const cells = (s: string) => [...s].reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-�
 
 /**
  * 横条上名字那一格的宽度:按所有配额里最长的名字算,名字居中。切换配额时两侧箭头和后面的字都不挪。
- * 终端按字符格精确算;桌面端字体不等宽,多留一格余量
+ * 按字符格算;桌面端字体不等宽,但一格比一般字符略宽,不另留余量(留了标题显得太宽)
  */
-const bandNameWidth = (show: BandShow, term: boolean) =>
-  Math.max(...show.keys.map(k => cells(P.displayName(k, k === show.key ? show.n : undefined))), cells(P.displayName(show.key, show.n))) + (term ? 0 : 1)
+const bandNameWidth = (show: BandShow, _term: boolean) =>
+  Math.max(...show.keys.map(k => cells(P.displayName(k, k === show.key ? show.n : undefined))), cells(P.displayName(show.key, show.n)))
 
 /**
  * 终端横条的排法:文字照实际宽度排,进度条吃剩下的格子(最多 48)。
@@ -566,9 +566,9 @@ function bandLayout(show: BandShow, cols: number, term: boolean): { bar: number;
   const elapsed = cells(L('· 已过 100%', '· 100% elapsed'))
   const buttons = Math.max(cells(t.details), cells(t.closeDetails)) + cells(t.hide)
   const width = (withElapsed: boolean) => {
-    const parts = [bandNameWidth(show, term), used, ...(withElapsed ? [elapsed] : [])]
-    // 终端:「h: ❮」「l: ❯」各 4 格;桌面端:原生按钮带内边距,各按 3 格
-    if (show.keys.length > 1) parts.push(term ? 4 : 3, term ? 4 : 3)
+    // 名字连同两侧箭头算一组:终端「h: ❮」「l: ❯」各 4 格、组内各空一格;桌面端原生按钮带内边距各按 3 格,组内不空格
+    const arrows = show.keys.length > 1 ? (term ? 4 + 4 + 2 : 3 + 3) : 0
+    const parts = [bandNameWidth(show, term) + arrows, used, ...(withElapsed ? [elapsed] : [])]
     const line = parts.reduce((a, b) => a + b, 0) + parts.length - 1
     // 终端:行、进度条、撑开的空白、详情、隐藏之间各空一格,引擎最后画「 [-]」再留一格;
     // 桌面端:两个按钮的内边距各算 2 格,行、进度条、两个按钮之间各空一格
@@ -601,9 +601,12 @@ function bandLine($: any, e: any, show: BandShow, withElapsed = true) {
   )
   return (
     <Box flexDirection="row" alignItems="center" gap={1} flexShrink={1} minWidth={0} overflow="hidden">
-      {canSwitch ? arrow(-1) : null}
-      <Box flexShrink={0} width={bandNameWidth(show, term)} justifyContent="center"><Text color={identityText(show.key)} wrap="truncate-end">{t.name}</Text></Box>
-      {canSwitch ? arrow(1) : null}
+      {/* 箭头和名字一组;桌面端原生按钮自带内边距,组内不再空格,标题不至于太宽 */}
+      <Box flexDirection="row" alignItems="center" gap={term ? 1 : 0} flexShrink={0}>
+        {canSwitch ? arrow(-1) : null}
+        <Box flexShrink={0} width={bandNameWidth(show, term)} justifyContent="center"><Text color={identityText(show.key)} wrap="truncate-end">{t.name}</Text></Box>
+        {canSwitch ? arrow(1) : null}
+      </Box>
       {t.used ? (
         <Box flexShrink={0}><Text color={show.ended ? undefined : identityText(show.key)} dimColor={!!show.ended} bold={!show.ended} wrap="truncate-end">{t.used}</Text></Box>
       ) : null}
