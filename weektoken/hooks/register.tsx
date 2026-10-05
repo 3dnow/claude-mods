@@ -29,6 +29,8 @@ const confirmHideA = atom({ plugin: 'weektoken', key: 'confirmHide' } as const, 
 const bandKeyA = atom({ plugin: 'weektoken', key: 'bandKey' } as const, null as string | null)
 const bandShowA = atom({ plugin: 'weektoken', key: 'bandShow' } as const, null as BandShow | null)
 const activityA = atom({ plugin: 'weektoken', key: 'activity' } as const, { byModel: {} } as Activity)
+// 面板开着没有:横条上的按钮据此写「收起」或「详情」
+const paneOpenA = atom({ plugin: 'weektoken', key: 'paneOpen' } as const, false)
 const AUTHOR = { x: 'mj0011sec' }
 
 // CLAUDE_MODS_DISABLE=all,或逗号列表里有 weektoken:所有钩子放行,也不注册命令
@@ -379,6 +381,22 @@ async function useLang($: any): Promise<void> {
 
 async function openPane($: any): Promise<void> {
   await $.ui.open({ id: PANE, title: 'WeekToken' })
+  await update($, paneOpenA, () => true)
+}
+
+/** 横条上的「详情」:面板开着且在最前面就收起,否则打开(或切到最前面)。按下时问引擎,不靠记的状态 */
+async function togglePane($: any): Promise<void> {
+  const pane = (await $.ui.panes()).find((p: { id: string; isShown: boolean }) => p.id === PANE)
+  if (pane?.isShown) {
+    await $.ui.close({ id: PANE })
+    await update($, paneOpenA, () => false)
+  } else await openPane($)
+}
+
+/** 面板实际开着没有,对齐到状态里(会话开始、重载后) */
+async function syncPaneOpen($: any): Promise<void> {
+  const open = (await $.ui.panes()).some((p: { id: string }) => p.id === PANE)
+  if ((await read($, paneOpenA)) !== open) await update($, paneOpenA, () => open)
 }
 
 async function setView($: any, fn: (v: PaneView) => PaneView): Promise<void> {
@@ -517,11 +535,19 @@ const bandTexts = (show: BandShow) => ({
   used: show.ended ? L('· 已重置', '· reset') : show.used != null ? L(`· 已用 ${show.used}%`, `· ${show.used}% used`) : null,
   elapsed: show.elapsed != null ? L(`· 已过 ${show.elapsed}%`, `· ${show.elapsed}% elapsed`) : null,
   details: L('详情', 'Details'),
+  closeDetails: L('收起', 'Close'),
   hide: L('隐藏', 'Hide'),
 })
 
 /** 终端里占几格:中日韩和全角字符两格 */
 const cells = (s: string) => [...s].reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch) ? 2 : 1), 0)
+
+/**
+ * 横条上名字那一格的宽度:按所有配额里最长的名字算,名字居中。切换配额时两侧箭头和后面的字都不挪。
+ * 终端按字符格精确算;桌面端字体不等宽,多留一格余量
+ */
+const bandNameWidth = (show: BandShow, term: boolean) =>
+  Math.max(...show.keys.map(k => cells(P.displayName(k, k === show.key ? show.n : undefined))), cells(P.displayName(show.key, show.n))) + (term ? 0 : 1)
 
 /**
  * 终端横条的排法:文字照实际宽度排,进度条吃剩下的格子(最多 48)。
@@ -530,7 +556,7 @@ const cells = (s: string) => [...s].reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-�
 function termBandLayout(show: BandShow, cols: number): { bar: number; withElapsed: boolean } {
   const t = bandTexts(show)
   const width = (withElapsed: boolean) => {
-    const parts = [t.name, t.used, withElapsed ? t.elapsed : null].filter((s): s is string => !!s).map(cells)
+    const parts = [bandNameWidth(show, true), ...[t.used, withElapsed ? t.elapsed : null].filter((s): s is string => !!s).map(cells)]
     if (show.keys.length > 1) parts.push(4, 4) // 「h: ❮」「l: ❯」
     const line = parts.reduce((a, b) => a + b, 0) + parts.length - 1
     // 行、进度条、撑开的空白、详情、隐藏之间各空一格;引擎在最后画收起标记「 [-]」,再留一格余量
@@ -563,7 +589,7 @@ function bandLine($: any, e: any, show: BandShow, withElapsed = true) {
   return (
     <Box flexDirection="row" alignItems="center" gap={1} flexShrink={1} minWidth={0} overflow="hidden">
       {canSwitch ? arrow(-1) : null}
-      <Box flexShrink={0}><Text color={identityText(show.key)} wrap="truncate-end">{t.name}</Text></Box>
+      <Box flexShrink={0} width={bandNameWidth(show, term)} justifyContent="center"><Text color={identityText(show.key)} wrap="truncate-end">{t.name}</Text></Box>
       {canSwitch ? arrow(1) : null}
       {t.used ? (
         <Box flexShrink={0}><Text color={show.ended ? undefined : identityText(show.key)} dimColor={!!show.ended} bold={!show.ended} wrap="truncate-end">{t.used}</Text></Box>
@@ -588,7 +614,7 @@ function drawConfirmHide($: any, e: any) {
   )
 }
 
-function drawBand($: any, e: any, show: BandShow) {
+function drawBand($: any, e: any, show: BandShow, paneOpen = false) {
   const { Box, Button } = $.ui.resolve(e)
   const term = e.surface === 'terminal'
   const used = show.used == null ? null : show.used / 100
@@ -615,7 +641,7 @@ function drawBand($: any, e: any, show: BandShow) {
         </Box>
       )}
       {term ? <Box flexGrow={1} /> : null}
-      <Button key="open" label={t.details} plain dimColor onPress={() => quiet(openPane($))} />
+      <Button key="open" label={paneOpen ? t.closeDetails : t.details} plain dimColor onPress={() => quiet(togglePane($))} />
       <Button key="band-hide" label={t.hide} plain dimColor role="dismiss" onPress={() => quiet(askHideBand($))} />
     </Box>
   )
@@ -911,6 +937,7 @@ export const register: Register = on => {
     try { await sampleSession($) } catch {}
     try { await sampleCache($) } catch {}
     try { await refreshBand($) } catch {}
+    try { await syncPaneOpen($) } catch {}
     // 装好后第一次:说一声横条是什么、数据什么时候出来、入口在哪
     if ((await $.store.get('welcomed')) !== true) {
       await $.store.set('welcomed', true)
@@ -996,13 +1023,19 @@ export const register: Register = on => {
 
   // 横条只读这几样:显示/隐藏、确认提示、语言、要画的内容(已取整)。采样和面板状态都不读。
   // 画完自己,把排在后面的 mod 和引擎自己要画的接在下面,不挡别人(下面有没有东西都包同一个 Box)
+  // 面板关掉时(横条上「收起」、面板的 ×、卸载)横条按钮改回「详情」;关闭原样交给引擎
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    if (!disabled) { try { await update($, paneOpenA, () => false) } catch {} }
+    return next(e)
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (disabled || e.props.hasSurvey) return next(e)
     if (((await read($, bandA)) ?? 'open') === 'hidden') return next(e)
     await useLang($)
     const show = (await read($, confirmHideA)) ? 'confirm' : await read($, bandShowA)
     if (!show) return next(e)
-    const ours = show === 'confirm' ? drawConfirmHide($, e) : drawBand($, e, show)
+    const ours = show === 'confirm' ? drawConfirmHide($, e) : drawBand($, e, show, !!(await read($, paneOpenA)))
     const below = await next(e)
     const { Box } = $.ui.resolve(e)
     return <Box flexDirection="column">{ours}{isBlank(below) ? null : below}</Box>

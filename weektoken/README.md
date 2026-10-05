@@ -21,7 +21,8 @@ In the terminal, the band sits above the prompt and `/weektoken` docks beside th
 
 **A band above the prompt:** `❮ 7-day ❯ · 64% used · 71% elapsed`, a progress bar that stretches with the band, plus **Details** and **Hide** (in the desktop app, Hide is the close button at the band's right end).
 - The bar stays in the quota's own color, like Apple's Activity rings. Using slower than time: light stripes of that color after the bar are the margin you have left. Using faster: the part ahead of the clock turns a deeper shade of the same color, striped. Only when a quota is used up does a warm tone appear, harmonized toward the quota's color.
-- Shows the tightest quota by default. The arrows around the name switch to another quota, and the choice is remembered across sessions. The band and the `/weektoken` pane always show the same quota: switching in either one switches both.
+- **Details** opens the pane; pressed again, it closes it (the button reads **Close** while the pane is open).
+- Shows the tightest quota by default. The arrows around the name switch to another quota, and the choice is remembered across sessions. The name sits in a fixed-width slot, so the arrows stay put as you switch. The band and the `/weektoken` pane always show the same quota: switching in either one switches both.
 - On a narrow band the line never wraps: the desktop app truncates from the end; in the terminal the line is laid out by its real width, dropping the elapsed figure first and then the bar.
 - When a quota's window has passed its reset time and no reading of the new window has arrived yet, the band says **reset** instead of showing the old window's usage.
 - **Hide** asks first and tells you how to get the band back: `/weektoken show`, or **⊕ Show band** at the bottom of the pane.

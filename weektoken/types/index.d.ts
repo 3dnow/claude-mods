@@ -52,6 +52,8 @@ declare module 'claude-code' {
       bandShow: BandShow | null
       /** 横条正在问「确定隐藏吗」 */
       confirmHide: boolean
+      /** 面板开着没有(横条按钮写「收起」还是「详情」) */
+      paneOpen: boolean
       lang: Lang
       activity: Activity
     }

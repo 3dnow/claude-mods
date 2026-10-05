@@ -45,7 +45,12 @@ function world(on: any, setting = '中文', apple = APPLE_EN, env: Record<string
   const registered: string[] = []
   on('command.register', (_$: unknown, e: { name: string }) => { registered.push(e.name); return { value: { command: e.name } } })
   on('ui.toast', (_$: unknown, e: unknown) => { toasts.push(JSON.stringify(e)); return { value: undefined } })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  // 记下开着的面板:ui.open 加、ui.close 减,ui.panes 照实回答
+  const openPanes = new Set<string>()
+  on('ui.open', (_$: unknown, e: { id: string }) => { openPanes.add(e.id); return { value: { isPlaced: true } } })
+  on('ui.close', (_$: unknown, e: { id: string }) => { openPanes.delete(e.id); return { value: undefined } })
+  on('ui.panes', () => ({ value: [...openPanes].map(id => ({ id, title: 'WeekToken', isShown: true, isFocused: false, isPlaced: true })) }))
+  stored.__openPanes = openPanes
   // 原生绘制的替身:插件交回 next(e) 时由它来画
   on('ui.render', { component: 'AbovePrompt' }, () => (below ?? { type: 'Box', props: { key: 'native-band' }, children: [] }) as any)
   stored.__toasts = toasts
@@ -412,5 +417,34 @@ test('横条和面板看同一个配额:任何一处切换,两边一起换', asy
   await pane.press({ key: 'tab-burnup' } as any)
   await pane.select({ key: 'quota', value: 'five_hour' } as any)
   expect(JSON.stringify(await band.drawn())).toContain('已用 40%')
+})
+
+test('横条上名字那一格宽度固定:切换配额时两侧箭头不挪', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const band = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
+  const nameBox = async () => {
+    const tree = JSON.stringify(await band.drawn())
+    return tree.match(/"width":(\d+),"justifyContent":"center"/)?.[1]
+  }
+  const before = await nameBox()
+  expect(before).toBeDefined()
+  await band.press({ key: 'band-next' } as any)
+  expect(JSON.stringify(await band.drawn())).toContain('5 小时')
+  expect(await nameBox()).toBe(before)
+})
+
+test('横条上的「详情」再按一下收起面板,按钮写「收起」', async ($, on) => {
+  const stored = world(on)
+  const open = stored.__openPanes as Set<string>
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const band = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
+  expect(JSON.stringify(await band.drawn())).toContain('"label":"详情"')
+  await band.press({ key: 'open' } as any)
+  expect(open.has('weektoken')).toBe(true)
+  expect(JSON.stringify(await band.drawn())).toContain('"label":"收起"')
+  await band.press({ key: 'open' } as any)
+  expect(open.has('weektoken')).toBe(false)
+  expect(JSON.stringify(await band.drawn())).toContain('"label":"详情"')
 })
 
