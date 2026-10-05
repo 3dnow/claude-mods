@@ -391,3 +391,26 @@ test('每分钟并进别的会话的采样:存储的版本号没变就不读整�
   await clock.advance(60_000)
   expect(gets.samples).toBe(before + 1)
 })
+
+test('横条和面板看同一个配额:任何一处切换,两边一起换', async ($, on) => {
+  const stored = world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const band = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
+  const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  // 都没选过:两边都显示最紧的 7 天
+  expect(JSON.stringify(await band.drawn())).toContain('已用 64%')
+  expect(JSON.stringify(await pane.drawn())).toContain('7 天 · 全部模型')
+  // 横条上换到 5 小时:面板跟着换
+  await band.press({ key: 'band-next' } as any)
+  expect(JSON.stringify(await pane.drawn())).toContain('5 小时会话额度')
+  // 面板里换回 7 天:横条跟着换,两边都记住
+  await pane.press({ key: 'prev' } as any)
+  expect(JSON.stringify(await band.drawn())).toContain('已用 64%')
+  expect(stored.bandKey).toBe('seven_day')
+  expect((stored.view as { key: string }).key).toBe('seven_day')
+  // 用量轨迹页的下拉也一样
+  await pane.press({ key: 'tab-burnup' } as any)
+  await pane.select({ key: 'quota', value: 'five_hour' } as any)
+  expect(JSON.stringify(await band.drawn())).toContain('已用 40%')
+})
+

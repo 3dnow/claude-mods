@@ -25,7 +25,7 @@ const viewA = atom({ plugin: 'weektoken', key: 'view' } as const, DEFAULT_VIEW)
 const noteA = atom({ plugin: 'weektoken', key: 'note' } as const, null as Note)
 const bandA = atom({ plugin: 'weektoken', key: 'band' } as const, 'open' as BandMode)
 const confirmHideA = atom({ plugin: 'weektoken', key: 'confirmHide' } as const, false)
-// 横条显示哪个配额单独存:面板不读它,在横条上切换不会让面板重画
+// 当前看的配额(横条和面板共用,切换时和 view.key 一起写,见 selectQuota)
 const bandKeyA = atom({ plugin: 'weektoken', key: 'bandKey' } as const, null as string | null)
 const bandShowA = atom({ plugin: 'weektoken', key: 'bandShow' } as const, null as BandShow | null)
 const activityA = atom({ plugin: 'weektoken', key: 'activity' } as const, { byModel: {} } as Activity)
@@ -76,7 +76,8 @@ function buildModel(samples: readonly Sample[], view: PaneView, now: number, ban
   const bottleneck = P.pickBottleneck(keys.map(k => ({ key: k, pace: rows[k].d.kind === 'pace' ? rows[k].d.pace : null })))
   // 横条:用横条上的箭头选过就显示选的那个,否则自动显示最紧的
   const band = bandKey && rows[bandKey] ? bandKey : bottleneck
-  const selected = view.key && rows[view.key] ? view.key : rows.seven_day ? 'seven_day' : (keys[0] ?? null)
+  // 面板和横条看同一个配额(切换时两边一起写);都没选过就一起显示最紧的
+  const selected = view.key && rows[view.key] ? view.key : (band ?? keys[0] ?? null)
   return { keys, rows, band, selected }
 }
 
@@ -269,10 +270,13 @@ async function loadState($: any): Promise<void> {
   const list = Array.isArray(stored) ? (stored as Sample[]) : []
   await update($, samplesA, cur => P.mergeSamples(list, cur ?? []))
   const v = (await $.store.get('view')) as { key?: string | null; bandKey?: string | null; pinned?: string | null } | undefined
-  if (v && typeof v === 'object') await update($, viewA, cur => ({ ...(cur ?? DEFAULT_VIEW), key: v.key ?? null }))
-  // 横条显示的配额;旧版存在 view 里(更早叫 pinned,「钉到输入框上方」)
+  // 横条和面板看同一个配额。旧版两边分开存过(横条的更早存在 view.bandKey / view.pinned),对不上时以横条的为准
   const bk = (await $.store.get('bandKey')) ?? v?.bandKey ?? v?.pinned ?? null
-  if (typeof bk === 'string') await update($, bandKeyA, () => bk)
+  const k = typeof bk === 'string' ? bk : typeof v?.key === 'string' ? v.key : null
+  if (k) {
+    await update($, bandKeyA, () => k)
+    await update($, viewA, cur => ({ ...(cur ?? DEFAULT_VIEW), key: k }))
+  }
   const act = (await $.store.get('activity')) as Activity | undefined
   if (act && typeof act === 'object') await update($, activityA, cur => mergeActivity(cur ?? { byModel: {} }, act))
   const band = await $.store.get('band')
@@ -383,9 +387,21 @@ async function setView($: any, fn: (v: PaneView) => PaneView): Promise<void> {
   await $.store.set('view', { key: v.key })
 }
 
+/**
+ * 换配额:横条和面板看同一个。横条的箭头、面板两侧的按钮、用量轨迹的下拉,都走这里,两边一起换并记住。
+ * (早先分开存,是因为横条一换面板里的框就闪;配速环和进度条都改成普通图片后不再闪,可以合一)
+ */
+async function selectQuota($: any, k: string): Promise<void> {
+  await update($, bandKeyA, () => k)
+  await update($, viewA, v => ({ ...(v ?? DEFAULT_VIEW), key: k, offset: 0 }))
+  await $.store.set('bandKey', k)
+  await $.store.set('view', { key: k })
+  await refreshBand($)
+}
+
 async function stepKey($: any, keys: readonly string[], sel: string, offset: number): Promise<void> {
   const k = P.neighbor(sel, keys, offset)
-  if (k) await setView($, v => ({ ...v, key: k, offset: 0 }))
+  if (k) await selectQuota($, k)
 }
 
 async function setBand($: any, mode: BandMode): Promise<void> {
@@ -415,13 +431,9 @@ async function answerHideBand($: any, hide: boolean): Promise<void> {
   if (hide) await setBand($, 'hidden')
 }
 
-/** 横条上的前后箭头:直接换横条显示的配额,并记住 */
+/** 横条上的前后箭头:换配额,面板跟着一起换 */
 async function stepBand($: any, keys: readonly string[], cur: string, offset: number): Promise<void> {
-  const k = P.neighbor(cur, keys, offset)
-  if (!k) return
-  await update($, bandKeyA, () => k)
-  await $.store.set('bandKey', k)
-  await refreshBand($)
+  await stepKey($, keys, cur, offset)
 }
 
 // 桌面端的面板没拿到键盘时(焦点在输入框),第一次点击只把焦点交给面板:引擎只发 ui.focus,不发 ui.press。
@@ -746,7 +758,7 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
   const ranges: P.Range[] = ['current', 'month', 'all']
   // 选配额用下拉;没有 Select 的表面(手机)退回左右按钮
   const quotaPick = m.keys.length < 2 ? null : Select ? (
-    <Select key="quota" options={m.keys.map(k => ({ value: k, label: P.pickName(k, m.rows[k].obs?.n) }))} value={row.key} onSelect={(k: string) => quiet(setView($, v => ({ ...v, key: k, offset: 0 })))} />
+    <Select key="quota" options={m.keys.map(k => ({ value: k, label: P.pickName(k, m.rows[k].obs?.n) }))} value={row.key} onSelect={(k: string) => quiet(selectQuota($, k))} />
   ) : (
     <Box flexDirection="row" gap={1}>
       <Button key="prev" label="‹" onPress={paneAct('prev', () => stepKey($, m.keys, row.key, -1))} />
@@ -1004,6 +1016,7 @@ export const register: Register = on => {
     await useLang($)
     const now = await $.clock.now()
     const activity = (await read($, activityA)) ?? { byModel: {} }
-    return drawPane($, e, samples, activity, view, note, band, buildModel(samples, view, now), now)
+    const bandKey = (await read($, bandKeyA)) ?? null
+    return drawPane($, e, samples, activity, view, note, band, buildModel(samples, view, now, bandKey), now)
   })
 }
