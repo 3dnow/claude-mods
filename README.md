@@ -16,7 +16,9 @@ Will you run out before the reset? WeekToken compares what you have used with ho
 
 ## Installation
 
-Inside Claude Code:
+WeekToken is in the Claude plugin directory: run `/plugin directory` in Claude Code, or add it under **Customize > Plugins > Discover** on claude.ai, which brings it to Claude Code at the next session start.
+
+Or from this repository, inside Claude Code:
 
 ```
 /plugin marketplace add 3dnow/claude-mods

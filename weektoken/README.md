@@ -114,6 +114,12 @@ In the mod's own store on your machine: samples (up to 8000) and their version s
 
 It changes no settings or permissions, and it leaves other plugins' events as they are.
 
+## Install
+
+From the Claude plugin directory: run `/plugin directory` in Claude Code, or add it under **Customize > Plugins > Discover** on claude.ai, which brings it to Claude Code at the next session start. Or from this repository, inside Claude Code: `/plugin marketplace add 3dnow/claude-mods`, then `/plugin install weektoken@mj0111-mods`. Then open a new session, or run `/reload-plugins`.
+
+It runs wherever Claude Code does: the terminal, the IDE extensions and the desktop app's Code tab. Like every mod, it does not run in chat or Cowork.
+
 ## Requirements
 
 - Claude Code 2.1.287 or newer, where mods are on by default. On an earlier build with mods in early access, add `"env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" }` to `~/.claude/settings.json` first
