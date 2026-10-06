@@ -1,11 +1,11 @@
 // WeekToken mod
 //
-// 配速:相对于时间,用得算快还是算慢。
-//   · 输入框上方一条:‹ 名字 › · 已用 · 已过 + 随宽度伸缩的进度条。默认显示最紧的配额,
-//     名字两侧的前后箭头直接换成别的配额并记住;「隐藏」后不占行,从面板恢复。
-//   · /weektoken 打开面板:配速环(两侧切配额)、解说、已用/已过/重置、用量轨迹
-//   数据:会话自己的 rateLimits(5 小时 / 7 天,每次回复更新)+ Claude Code 本地用量缓存
-//   ~/.claude.json(含 Fable 等分模型配额)+ WeekToken macOS 版的历史采样(只读导入)。
+// Pace: whether usage is running fast or slow relative to elapsed time.
+//   · A band above the prompt: ‹ name › · used · elapsed + a bar that scales with width. Shows the tightest quota by default;
+//     the prev/next arrows beside the name switch quota and remember it; once hidden it takes no row, restore from the pane.
+//   · /weektoken opens the pane: quota arrows beside the title, pace rings with used/elapsed/reset, commentary, burn-up
+//   Data: the session's own rateLimits (5-hour / 7-day, updated on every reply) + Claude Code's local usage cache
+//   ~/.claude.json (incl. per-model quotas such as Fable) + history samples from WeekToken for macOS (read-only import).
 
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
@@ -24,17 +24,17 @@ const viewA = atom({ plugin: 'weektoken', key: 'view' } as const, DEFAULT_VIEW)
 const noteA = atom({ plugin: 'weektoken', key: 'note' } as const, null as Note)
 const bandA = atom({ plugin: 'weektoken', key: 'band' } as const, 'open' as BandMode)
 const confirmHideA = atom({ plugin: 'weektoken', key: 'confirmHide' } as const, false)
-// 当前看的配额(横条和面板共用,切换时和 view.key 一起写,见 selectQuota)
+// Quota being viewed (shared by band and pane; written together with view.key on switch, see selectQuota)
 const bandKeyA = atom({ plugin: 'weektoken', key: 'bandKey' } as const, null as string | null)
 const bandShowA = atom({ plugin: 'weektoken', key: 'bandShow' } as const, null as BandShow | null)
 const activityA = atom({ plugin: 'weektoken', key: 'activity' } as const, { byModel: {} } as Activity)
-// 面板开着没有:横条上的按钮据此写「收起」或「详情」
+// Whether the pane is open: the band button reads "Close" or "Details" from this
 const paneOpenA = atom({ plugin: 'weektoken', key: 'paneOpen' } as const, false)
-/** 载入的是哪一版:会话开始时从自己的 plugin.json 读,画在署名后面 */
+/** Loaded version: read from our own plugin.json at session start, drawn after the credit */
 const versionA = atom({ plugin: 'weektoken', key: 'version' } as const, '')
 const AUTHOR = { x: 'mj0011sec' }
 
-// CLAUDE_MODS_DISABLE=all,或逗号列表里有 weektoken:所有钩子放行,也不注册命令
+// CLAUDE_MODS_DISABLE=all, or weektoken in the comma list: all hooks pass through and no command is registered
 let disabled = false
 async function readDisabled($: any): Promise<boolean> {
   const raw = ((await $.env.get('CLAUDE_MODS_DISABLE')) ?? '').toLowerCase()
@@ -44,7 +44,7 @@ async function readDisabled($: any): Promise<boolean> {
 const langA = atom({ plugin: 'weektoken', key: 'lang' } as const, 'en' as Lang)
 
 // ======================================================================
-// 模型:由采样算出每个配额的显示状态、瓶颈和面板选中的配额
+// Model: derive each quota's display state, the bottleneck and the pane's selected quota from samples
 // ======================================================================
 
 type QuotaRow = {
@@ -70,27 +70,27 @@ function buildModel(samples: readonly Sample[], view: PaneView, now: number, ban
       obs: lo?.obs,
       at: lo?.at,
       len,
-      // 不按数据新旧降级:没用就不会变,旧数据照样能算配速(底部另说多久没用了)
+      // No downgrade by data age: unused means unchanged, so old data still yields a pace (the footer says how long it's been idle)
       d: P.display(lo?.obs, len.seconds, now),
       name: P.displayName(k, lo?.obs.n),
       full: P.fullName(k, lo?.obs.n),
     }
   }
   const bottleneck = P.pickBottleneck(keys.map(k => ({ key: k, pace: rows[k].d.kind === 'pace' ? rows[k].d.pace : null })))
-  // 横条:用横条上的箭头选过就显示选的那个,否则自动显示最紧的
+  // Band: show the quota picked with the band arrows, otherwise the tightest one
   const band = bandKey && rows[bandKey] ? bandKey : bottleneck
-  // 面板和横条看同一个配额(切换时两边一起写);都没选过就一起显示最紧的
+  // Pane and band show the same quota (both written on switch); if none was picked, both show the tightest
   const selected = view.key && rows[view.key] ? view.key : (band ?? keys[0] ?? null)
   return { keys, rows, band, selected }
 }
 
-/** 横条要画的东西,按显示精度取整;算不出就是 null(横条交回原生绘制) */
+/** What the band draws, rounded to display precision; null if it can't be computed (band falls back to native rendering) */
 function bandShowOf(samples: readonly Sample[], bandKey: string | null, now: number): BandShow | null {
   if (!samples.length) return null
   const m = buildModel(samples, DEFAULT_VIEW, now, bandKey)
   const row = m.band ? m.rows[m.band] : undefined
   if (!row) return null
-  // 最后一次观测的窗口已经过了重置时刻:那时的用量已作废,横条写「已重置」,等下一次回复带来新窗口
+  // Last observed window is past its reset time: that usage is void, so the band says "reset" until the next reply brings a new window
   const ended = row.d.kind === 'usageOnly' && row.d.reason.kind === 'windowEnded'
   const used = ended ? null : P.displayUsed(row.d)
   return {
@@ -105,7 +105,7 @@ function bandShowOf(samples: readonly Sample[], bandKey: string | null, now: num
 }
 
 // ======================================================================
-// 取数
+// Data collection
 // ======================================================================
 
 type RateLimitLike = { kind: string; percentUsed: number; resetsAt?: string }
@@ -136,8 +136,8 @@ async function addSample($: any, s: Sample): Promise<boolean> {
 }
 
 /**
- * 写回存储前先和已存的合并:几个会话同时开着,各自整份写会把别的会话刚记的采样冲掉。
- * 合并后别的会话的采样也并进本会话。读-并-写不是原子的,偶尔撞车也只是晚一次补上:每个会话下次写时还会再并。
+ * Merge with what's stored before writing back: with several sessions open, each writing its full list would clobber samples another session just recorded.
+ * Other sessions' samples are merged into this one too. Read-merge-write isn't atomic; an occasional collision just lands one write later, since each session merges again on its next write.
  */
 async function persistSamples($: any): Promise<void> {
   const stored = await $.store.get('samples')
@@ -146,11 +146,11 @@ async function persistSamples($: any): Promise<void> {
   try {
     await $.store.set('samples', merged)
   } catch {
-    // 存储有大小上限(每个插件 4 MiB):写不进就裁掉最旧的四分之一再写一次
+    // Storage is size-capped (4 MiB per plugin): if the write fails, drop the oldest quarter and retry once
     merged = merged.slice(Math.floor(merged.length / 4))
     await $.store.set('samples', merged)
   }
-  // 小小的版本号:别的会话每分钟先看它,没变就不必把整份采样读过去
+  // Small revision tag: other sessions check it every minute and skip reading the full samples if unchanged
   lastSeenRev = `${merged.length}:${merged[merged.length - 1]?.t ?? 0}`
   await $.store.set('samplesRev', lastSeenRev)
   if (merged.length !== mine.length) await update($, samplesA, () => merged)
@@ -158,7 +158,7 @@ async function persistSamples($: any): Promise<void> {
 
 let lastSeenRev: string | null = null
 
-/** 把别的会话写进存储的采样并进本会话(不写回);有新的才动状态 */
+/** Merge samples other sessions stored into this session (no write-back); touch state only if something is new */
 async function adoptStoredSamples($: any): Promise<boolean> {
   const rev = await $.store.get('samplesRev')
   if (typeof rev === 'string' && rev === lastSeenRev) return false
@@ -178,17 +178,17 @@ const mergeActivity = (a: Activity, b: Activity): Activity => {
   return { any: Math.max(a.any ?? 0, b.any ?? 0) || undefined, byModel }
 }
 
-/** 记一次回复(含子代理):任何模型都算用了 5 小时 / 7 天,对应家族的模型算用了它的分模型配额 */
+/** Record a reply (incl. subagents): any model counts toward 5-hour / 7-day; a model also counts toward its family's per-model quota */
 async function recordActivity($: any, model: string | undefined): Promise<void> {
   const now = await $.clock.now()
   const fam = P.modelFamily(model)
   await update($, activityA, a => mergeActivity(a ?? { byModel: {} }, { any: now, byModel: fam ? { [fam]: now } : {} }))
-  // 别的会话也在写:存之前和已存的合并,取较晚的
+  // Other sessions write too: merge with the stored value before saving, keeping the later time
   const stored = ((await $.store.get('activity')) as Activity | undefined) ?? { byModel: {} }
   await $.store.set('activity', mergeActivity(stored, await read($, activityA)))
 }
 
-/** 什么都不画的树:空、空字符串、只有空 Box/Text */
+/** A tree that draws nothing: null, empty string, or only empty Box/Text */
 function isBlank(node: any): boolean {
   if (node == null || node === false || node === '') return true
   if (Array.isArray(node)) return node.every(isBlank)
@@ -197,7 +197,7 @@ function isBlank(node: any): boolean {
   return false
 }
 
-/** 重算横条要画的东西;和现在一样就不写——不写就不重画 */
+/** Recompute what the band draws; skip the write if unchanged, so no redraw */
 async function refreshBand($: any): Promise<void> {
   const next = bandShowOf((await read($, samplesA)) ?? [], (await read($, bandKeyA)) ?? null, await $.clock.now())
   const cur = (await read($, bandShowA)) ?? null
@@ -218,7 +218,7 @@ async function expandHome($: any, p: string): Promise<string> {
   return home ? home + p.slice(1) : p
 }
 
-/** Claude Code 的本地用量缓存(含分模型配额);文件没变就不再解析 */
+/** Claude Code's local usage cache (incl. per-model quotas); not re-parsed if the file is unchanged */
 async function sampleCache($: any, force = false): Promise<boolean> {
   const path = await expandHome($, '~/.claude.json')
   if (!(await $.fs.exists(path))) return false
@@ -229,7 +229,7 @@ async function sampleCache($: any, force = false): Promise<boolean> {
   try {
     text = await $.fs.read(path)
   } catch {
-    text = await extractCacheWithPerl($, path) // 超过 4 MiB 读不进来时,只抽缓存那一段
+    text = await extractCacheWithPerl($, path) // Read fails over 4 MiB: extract just the cache section
   }
   if (!text) return false
   const s = P.parseClaudeJsonCache(text, await $.clock.now())
@@ -237,7 +237,7 @@ async function sampleCache($: any, force = false): Promise<boolean> {
 }
 
 async function extractCacheWithPerl($: any, path: string): Promise<string | null> {
-  // -0777:整个文件读进来;程序和正则是固定文本,路径作为参数直接交给 perl,不经过 shell
+  // -0777: slurp the whole file; program and regex are fixed text, the path is passed to perl as an argument, no shell
   try {
     const r = await $.process.run(['perl', '-0777', '-ne', 'print $1 if /"cachedUsageUtilization"\\s*:\\s*(\\{(?:[^{}"]++|"(?:\\\\.|[^"\\\\])*+"|(?1))*\\})/', path], { timeoutMs: 15_000 })
     if (r.exitCode === 0 && r.stdout.trim().startsWith('{')) return `{"cachedUsageUtilization":${r.stdout.trim()}}`
@@ -245,7 +245,7 @@ async function extractCacheWithPerl($: any, path: string): Promise<string | null
   return null
 }
 
-/** WeekToken macOS 版的历史(只读);默认位置,WEEKTOKEN_HISTORY 可改,设成空串就不导入。文件没变就不再导入,返回新导入的条数 */
+/** History from WeekToken for macOS (read-only); default location, override with WEEKTOKEN_HISTORY, empty string disables import. Skipped if the file is unchanged; returns the count newly imported */
 async function importHistory($: any): Promise<number> {
   const file = ((await $.env.get('WEEKTOKEN_HISTORY')) ?? '~/.weektoken/samples.jsonl').trim()
   if (!file) return 0
@@ -273,7 +273,7 @@ async function loadState($: any): Promise<void> {
   const list = Array.isArray(stored) ? (stored as Sample[]) : []
   await update($, samplesA, cur => P.mergeSamples(list, cur ?? []))
   const v = (await $.store.get('view')) as { key?: string | null; bandKey?: string | null; pinned?: string | null } | undefined
-  // 横条和面板看同一个配额。旧版两边分开存过(横条的更早存在 view.bandKey / view.pinned),对不上时以横条的为准
+  // Band and pane show the same quota. Older versions stored them separately (the band's earlier in view.bandKey / view.pinned); on mismatch the band's wins
   const bk = (await $.store.get('bandKey')) ?? v?.bandKey ?? v?.pinned ?? null
   const k = typeof bk === 'string' ? bk : typeof v?.key === 'string' ? v.key : null
   if (k) {
@@ -283,15 +283,15 @@ async function loadState($: any): Promise<void> {
   const act = (await $.store.get('activity')) as Activity | undefined
   if (act && typeof act === 'object') await update($, activityA, cur => mergeActivity(cur ?? { byModel: {} }, act))
   const band = await $.store.get('band')
-  // 旧版还有「收起」(mini),现在一律当作显示
+  // Older versions also had "collapsed" (mini); now always treated as shown
   if (band === 'hidden' || band === 'open' || band === 'mini') await update($, bandA, () => (band === 'hidden' ? 'hidden' : 'open'))
 }
 
 /**
- * 本机 claude 的 /usage:分模型配额(Fable 等)唯一的新鲜来源。本地命令,不调模型、不耗额度、
- * 不留会话记录;要扫本机会话算用量构成,约 10 秒,所以只在手动刷新时跑。
- * 命令是固定文本,按名字找 claude。桌面端起的进程 PATH 里未必有它,
- * 所以在原有 PATH 后面接上几个常见安装位置(env.PATH 会用来查找程序,已实测)。
+ * Local claude's /usage: the only fresh source of per-model quotas (Fable etc.). A local command: no model call, no quota spent,
+ * no session record; it scans local sessions for the usage breakdown, about 10 s, so it only runs on manual refresh.
+ * The command is fixed text; claude is found by name. Processes started by the desktop app may not have it on PATH,
+ * so a few common install locations are appended to the existing PATH (env.PATH is used for program lookup, verified).
  */
 async function usagePath($: any): Promise<string> {
   const home = (await $.env.get('HOME')) ?? ''
@@ -299,13 +299,13 @@ async function usagePath($: any): Promise<string> {
   return [(await $.env.get('PATH')) ?? '/usr/bin:/bin', ...extra, '/opt/homebrew/bin', '/usr/local/bin'].join(':')
 }
 
-/** 跑 /usage 并记一次采样;ok = 拿到并认出了输出 */
+/** Run /usage and record a sample; ok = output received and recognized */
 async function sampleUsageCommand($: any): Promise<{ ok: boolean; changed: boolean }> {
   const r = await $.process.run(['claude', '-p', '--no-session-persistence', '/usage'], { timeoutMs: 60_000, env: { PATH: await usagePath($) } })
   if (r.exitCode !== 0) return { ok: false, changed: false }
   const s = P.parseUsageCommand(r.stdout, await $.clock.now())
   if (!s) return { ok: false, changed: false }
-  // 5 小时 / 7 天以会话自带的(精确到秒)为准;本地 10 分钟内没有更新的读数时(新会话还没回复过)才用这里的
+  // For 5-hour / 7-day the session's own values (second precision) win; use these only if there's no local reading within 10 minutes (new session, no reply yet)
   const samples = (await read($, samplesA)) ?? []
   const w: Record<string, P.Obs> = {}
   for (const [k, o] of Object.entries(s.w)) {
@@ -318,7 +318,7 @@ async function sampleUsageCommand($: any): Promise<{ ok: boolean; changed: boole
   return { ok: true, changed: Object.keys(w).length ? await addSample($, { t: s.t, w }) : false }
 }
 
-/** 手动刷新的「进行中」:存在状态里,按钮据此显示「刷新中…」;超过 90 秒(子进程超时 60 秒)当作已结束 */
+/** Manual refresh "in progress": kept in state so the button shows "Refreshing…"; treated as done after 90 s (subprocess timeout is 60 s) */
 const isBusy = (note: Note, now: number) => !!note?.busy && now - note.at < 90_000
 
 async function refreshAll($: any, manual: boolean): Promise<void> {
@@ -334,7 +334,7 @@ async function refreshAll($: any, manual: boolean): Promise<void> {
     if (!manual) return
     let ok = false
     try { ok = (await sampleUsageCommand($)).ok } catch {}
-    // 成功不另说(底部那行和图会自己更新);只有 /usage 跑不出来才提示
+    // Nothing on success (footer and chart update themselves); notify only when /usage fails
     if (!ok) $.ui.toast(L('没能运行 claude /usage:Fable 等分模型配额这次没更新', "Couldn't run claude /usage: per-model quotas such as Fable weren't updated"), { timeoutMs: 8_000 })
   } finally {
     if (manual) await update($, noteA, () => null)
@@ -342,7 +342,7 @@ async function refreshAll($: any, manual: boolean): Promise<void> {
 }
 
 // ======================================================================
-// 界面语言:WEEKTOKEN_LANG(zh / en)→ Claude Code 的 language 设置 → 系统语言(macOS 首选语言,其次 LC_ALL/LC_MESSAGES/LANG)→ 英文
+// UI language: WEEKTOKEN_LANG (zh / en) → Claude Code's language setting → system language (macOS preferred languages, then LC_ALL/LC_MESSAGES/LANG) → English
 // ======================================================================
 
 async function detectLang($: any): Promise<Lang> {
@@ -353,7 +353,7 @@ async function detectLang($: any): Promise<Lang> {
     const l = langFromSetting(row?.value)
     if (l) return l
   } catch {}
-  // macOS 的「系统语言」是首选语言列表;LANG 只是终端环境,桌面端起的进程里可能另有其值。Linux 没有 defaults,落到 LANG
+  // macOS "system language" is the preferred-languages list; LANG is only the terminal env and may differ in processes started by the desktop app. Linux has no defaults, falls through to LANG
   try {
     const r = await $.process.run(['defaults', 'read', '-g', 'AppleLanguages'], { timeoutMs: 5_000 })
     const l = r.exitCode === 0 ? langFromAppleLanguages(r.stdout) : null
@@ -362,7 +362,7 @@ async function detectLang($: any): Promise<Lang> {
   return langFromEnv(await $.env.get('LC_ALL')) ?? langFromEnv(await $.env.get('LC_MESSAGES')) ?? langFromEnv(await $.env.get('LANG')) ?? 'en'
 }
 
-/** 探测语言;和现在一样就不写(写了横条和面板都会重画)。返回是否变了 */
+/** Detect language; skip the write if unchanged (a write redraws band and pane). Returns whether it changed */
 async function refreshLang($: any): Promise<boolean> {
   const l = await detectLang($)
   setLang(l)
@@ -371,13 +371,13 @@ async function refreshLang($: any): Promise<boolean> {
   return true
 }
 
-/** 绘制前对齐语言:模块重载后变量回到默认,而 $.state 里的值还在 */
+/** Sync language before drawing: after a module reload the variable resets to default, but the value in $.state remains */
 async function useLang($: any): Promise<void> {
   setLang((await read($, langA)) ?? 'en')
 }
 
 // ======================================================================
-// 面板与横条的动作
+// Pane and band actions
 // ======================================================================
 
 async function openPane($: any): Promise<void> {
@@ -386,7 +386,7 @@ async function openPane($: any): Promise<void> {
   await update($, viewA, v => ({ ...(v ?? DEFAULT_VIEW), explore: false }))
 }
 
-/** 横条上的「详情」:面板开着且在最前面就收起,否则打开(或切到最前面)。按下时问引擎,不靠记的状态 */
+/** Band "Details": close the pane if it's open and in front, otherwise open it (or bring it to front). Asks the engine on press, not stored state */
 async function togglePane($: any): Promise<void> {
   const pane = (await $.ui.panes()).find((p: { id: string; isShown: boolean }) => p.id === PANE)
   if (pane?.isShown) {
@@ -395,7 +395,7 @@ async function togglePane($: any): Promise<void> {
   } else await openPane($)
 }
 
-/** 面板实际开着没有,对齐到状态里(会话开始、重载后) */
+/** Sync whether the pane is actually open into state (session start, after reload) */
 async function syncPaneOpen($: any): Promise<void> {
   const open = (await $.ui.panes()).some((p: { id: string }) => p.id === PANE)
   if ((await read($, paneOpenA)) !== open) await update($, paneOpenA, () => open)
@@ -408,8 +408,8 @@ async function setView($: any, fn: (v: PaneView) => PaneView): Promise<void> {
 }
 
 /**
- * 换配额:横条和面板看同一个。横条的箭头、面板两侧的按钮、用量轨迹的下拉,都走这里,两边一起换并记住。
- * (早先分开存,是因为横条一换面板里的框就闪;配速环和进度条都改成普通图片后不再闪,可以合一)
+ * Switch quota: band and pane show the same one. Band arrows, pane side buttons and the burn-up dropdown all go through here; both switch and it's remembered.
+ * (Stored separately earlier because switching on the band made the pane's frame flicker; with the pace ring and bar now plain images it no longer does, so they're unified)
  */
 async function selectQuota($: any, k: string): Promise<void> {
   await update($, bandKeyA, () => k)
@@ -429,13 +429,13 @@ async function setBand($: any, mode: BandMode): Promise<void> {
   await $.store.set('band', mode)
 }
 
-/** 面板里的显示/隐藏:按下时读当前状态再翻转,不依赖绘制时的快照 */
+/** Show/hide in the pane: read current state on press and flip it, not the render-time snapshot */
 async function toggleBandHidden($: any): Promise<void> {
   const cur = (await read($, bandA)) ?? 'open'
   await setBand($, cur === 'hidden' ? 'open' : 'hidden')
 }
 
-/** 横条上的「隐藏」先问一句:隐藏后横条上再没有入口,要告诉人从 /weektoken 回来;8 秒不理就作罢 */
+/** Band "Hide" asks first: once hidden the band has no entry point, so tell the user to come back via /weektoken; dropped after 8 s without an answer */
 let confirmTimer: { cancel: () => void } | null = null
 
 async function askHideBand($: any): Promise<void> {
@@ -451,23 +451,23 @@ async function answerHideBand($: any, hide: boolean): Promise<void> {
   if (hide) await setBand($, 'hidden')
 }
 
-/** 横条上的前后箭头:换配额,面板跟着一起换 */
+/** Band prev/next arrows: switch quota, the pane follows */
 async function stepBand($: any, keys: readonly string[], cur: string, offset: number): Promise<void> {
   await stepKey($, keys, cur, offset)
 }
 
-// 桌面端的面板没拿到键盘时(焦点在输入框),第一次点击只把焦点交给面板:引擎只发 ui.focus,不发 ui.press。
-// 实测:有焦点时一次点击是「ui.press → 约 70ms 后 ui.focus」;没焦点时只有 ui.focus。
-// 所以绘制面板时按按钮的 key 记下它的动作;ui.focus 落到按钮上、前后都没等到它的 ui.press,就替它按一次。
-// 事件里分不出点击和 Tab:面板本来就有键盘时(Tab / 方向键只在这时走焦点)不替它按。
-// 「本来就有」看上一次绘制的 e.props.isFocused:焦点离开时面板会重画成 false(真机日志实证);
-// $.ui.panes() 在 ui.focus 里已经报告「有焦点」,哪怕是失焦后的第一次点击,不能用。只在桌面端这样做。
+// When the desktop pane doesn't have the keyboard (focus in the prompt), the first click only hands focus to the pane: the engine sends ui.focus, no ui.press.
+// Measured: with focus, a click is "ui.press → ui.focus ~70ms later"; without focus, only ui.focus.
+// So when drawing the pane, record each button's action by key; if ui.focus lands on a button with no ui.press before or after, press it once on its behalf.
+// Events can't tell a click from Tab: if the pane already had the keyboard (only then do Tab / arrow keys move focus), don't press.
+// "Already had" comes from the last render's e.props.isFocused: the pane redraws with false when focus leaves (confirmed in device logs);
+// $.ui.panes() already reports "focused" inside ui.focus, even on the first click after blur, so it's unusable. Desktop only.
 const paneActions = new Map<string, () => unknown>()
 let paneSurface = 'desktop'
 let paneFocusedAtRender = false
 let lastPanePress: { el: string; at: number } | null = null
 
-/** 登记面板按钮的动作(补按用);出错只吞掉,不留未处理的拒绝 */
+/** Register a pane button's action (for the substitute press); errors are swallowed, no unhandled rejections */
 function paneAct(key: string, fn: () => unknown): () => Promise<void> {
   const run = () => Promise.resolve().then(fn).then(() => {}, () => {})
   paneActions.set(key, run)
@@ -475,24 +475,24 @@ function paneAct(key: string, fn: () => unknown): () => Promise<void> {
 }
 
 // ======================================================================
-// 绘制:输入框上方的横条
+// Rendering: the band above the prompt
 // ======================================================================
 
 const STATUS_DIM = new Set(['early', 'unknown'])
 const SVG_MAX = 120_000
 
-/** 点击触发的异步动作:出错只吞掉,不留未处理的拒绝 */
+/** Async action fired by a click: errors are swallowed, no unhandled rejections */
 const quiet = (p: Promise<unknown>) => { void p.catch(() => {}) }
 
 /**
- * 画一张 SVG。小图和可交互的图显式给宽高(可交互的图在沙箱 iframe 里,不给会被拉满整行);
- * 宽图表 fluid:不给宽高,按自身宽度、最多缩到面板宽(给了比面板宽的尺寸,会被当成位图缩小而发糊)
+ * Draw an SVG. Small and interactive images get explicit width/height (interactive ones sit in a sandboxed iframe and otherwise stretch to the full row);
+ * wide charts are fluid: no width/height, natural width, shrunk to pane width at most (a size wider than the pane gets scaled down as a bitmap and blurs)
  */
 function pic($: any, e: any, source: string, alt: string, opts: { isInteractive?: boolean; fluid?: boolean; fillHeight?: number } = {}) {
   const { Svg } = $.ui.resolve(e)
   if (opts.fluid) return <Svg source={source} alt={alt} />
-  // 只给高度的普通图片:SVG 不声明宽度(width="100%")、几何全用百分比,宽度随格子、最多到图片默认的 300px,
-  // 只变长不变形。不用可交互框:框在同一插件的别处(面板)重画时会被宿主重新装载而闪一下(真机实证)
+  // Plain image with height only: the SVG declares no width (width="100%") and uses percentage geometry, so width follows the cell up to the image default 300px,
+  // stretching without distortion. No interactive frame: the host reloads it, flickering, whenever the same plugin redraws elsewhere (the pane) (confirmed on device)
   if (opts.fillHeight) return <Svg source={source} alt={alt} height={opts.fillHeight} />
   const m = /^<svg[^>]*?\swidth="([\d.]+)"\s+height="([\d.]+)"/.exec(source)
   const size = m ? { width: Number(m[1]), height: Number(m[2]) } : {}
@@ -501,7 +501,7 @@ function pic($: any, e: any, source: string, alt: string, opts: { isInteractive?
     : <Svg source={source} alt={alt} {...size} />
 }
 
-/** 终端里的文字版 bullet:用量块 + 时间竖线 */
+/** Text bullet for the terminal: usage blocks + time marker */
 function termBar($: any, e: any, key: string, used: number | null, elapsed: number | null, st: P.Status, width: number) {
   const { Text } = $.ui.resolve(e)
   const nU = Math.round((used ?? 0) * width)
@@ -528,9 +528,9 @@ const termBarOf = ($: any, e: any, row: QuotaRow, width: number) =>
   termBar($, e, row.key, P.displayUsed(row.d), row.d.kind === 'pace' ? row.d.pace.elapsed : null, P.displayStatus(row.d), width)
 
 /**
- * 横条上的一行字:‹ 名字 › · 已用 · 已过。每段一个不折行的 Text(嵌套的 Text 在桌面端会折行);
- * 名字和已用不缩,已过最先被截掉。配速状态看进度条的颜色,不再写字。
- * 有多个配额时名字两侧是前后箭头,悬停染成要切到的那个配额的颜色。
+ * The band's text line: ‹ name › · used · elapsed. One non-wrapping Text per segment (nested Text wraps on desktop);
+ * name and used don't shrink, elapsed is truncated first. Pace status is shown by the bar color, not text.
+ * With multiple quotas, prev/next arrows flank the name and on hover take the color of the quota they switch to.
  */
 const bandTexts = (show: BandShow) => ({
   name: P.displayName(show.key, show.n),
@@ -541,25 +541,25 @@ const bandTexts = (show: BandShow) => ({
   hide: L('隐藏', 'Hide'),
 })
 
-/** 终端里占几格:中日韩和全角字符两格 */
+/** Terminal cell width: CJK and full-width characters take two cells */
 const cells = (s: string) => [...s].reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch) ? 2 : 1), 0)
 
 /**
- * 横条上名字那一格的宽度:按所有配额里最长的名字算,名字居中。切换配额时两侧箭头和后面的字都不挪。
- * 按字符格算;桌面端字体不等宽,但一格比一般字符略宽,不另留余量(留了标题显得太宽)
+ * Width of the band's name cell: sized to the longest quota name, name centered. Switching quotas moves neither the arrows nor the text after them.
+ * Counted in character cells; desktop fonts are proportional but a cell is slightly wider than a typical glyph, so no extra margin (with it the title looks too wide)
  */
 const bandNameWidth = (show: BandShow, _term: boolean) =>
   Math.max(...show.keys.map(k => cells(P.displayName(k, k === show.key ? show.n : undefined))), cells(P.displayName(show.key, show.n)))
 
 /**
- * 终端横条的排法:文字照实际宽度排,进度条吃剩下的格子(最多 48)。
- * 不够 8 格先去掉「已过」那段,还不够就不画进度条——绝不让这一行折成两行。
+ * Terminal band layout: text at its actual width, the bar takes the remaining cells (max 48).
+ * Under 8 cells, drop the "elapsed" segment first; still short, skip the bar. Never let the line wrap to two.
  */
 /**
- * 横条怎么排:进度条吃剩下的格子,不够时先去掉「已过」那段,再不够就不画进度条(终端)。
- * 「放不放得下」按最坏情况算:最长的配额名、「100%」这种最宽的读数、两种按钮文字里较长的那个。
- * 只看横条多宽,不看当前配额的数字——同一宽度下所有配额表现一致,不会这个显示全、那个被截成「elap…」。
- * 终端按字符格精确算;桌面端字体不等宽、原生按钮带内边距,箭头和按钮按估计的格数算,进度条至少留 BAR_MIN 格。
+ * Band layout: the bar takes the remaining cells; when short, drop the "elapsed" segment first, then skip the bar (terminal).
+ * "Does it fit" assumes the worst case: longest quota name, widest reading such as "100%", the longer of the two button labels.
+ * Depends only on band width, not the current quota's numbers, so all quotas behave the same at a given width; none shows in full while another is cut to "elap…".
+ * Terminal counts exact character cells; on desktop fonts are proportional and native buttons have padding, so arrows and buttons use estimated cells and the bar keeps at least BAR_MIN.
  */
 const BAR_MIN = 6
 function bandLayout(show: BandShow, cols: number, term: boolean): { bar: number; withElapsed: boolean } {
@@ -568,12 +568,12 @@ function bandLayout(show: BandShow, cols: number, term: boolean): { bar: number;
   const elapsed = cells(L('· 已过 100%', '· 100% elapsed'))
   const buttons = Math.max(cells(t.details), cells(t.closeDetails)) + cells(t.hide)
   const width = (withElapsed: boolean) => {
-    // 名字连同两侧箭头算一组:终端「h: ❮」「l: ❯」各 4 格、组内各空一格;桌面端原生按钮带内边距各按 3 格,组内不空格
+    // Name plus both arrows form one group: terminal "h: ❮" / "l: ❯" are 4 cells each, one space apart; desktop native buttons have padding, 3 cells each, no spaces
     const arrows = show.keys.length > 1 ? (term ? 4 + 4 + 2 : 3 + 3) : 0
     const parts = [bandNameWidth(show, term) + arrows, used, ...(withElapsed ? [elapsed] : [])]
     const line = parts.reduce((a, b) => a + b, 0) + parts.length - 1
-    // 终端:行、进度条、撑开的空白、详情、隐藏之间各空一格,引擎最后画「 [-]」再留一格;
-    // 桌面端:两个按钮的内边距各算 2 格,行、进度条、两个按钮之间各空一格
+    // Terminal: one space between line, bar, spacer, Details and Hide; the engine draws " [-]" last, plus one more cell;
+    // Desktop: 2 cells of padding per button, one space between line, bar and the two buttons
     return line + buttons + (term ? 4 + 5 : 4 + 3)
   }
   if (!term) return { bar: 1, withElapsed: !!t.elapsed && width(true) + BAR_MIN <= cols }
@@ -603,7 +603,7 @@ function bandLine($: any, e: any, show: BandShow, withElapsed = true) {
   )
   return (
     <Box flexDirection="row" alignItems="center" gap={1} flexShrink={1} minWidth={0} overflow="hidden">
-      {/* 箭头和名字一组;桌面端原生按钮自带内边距,组内不再空格,标题不至于太宽 */}
+      {/* Arrows and name as one group; desktop native buttons have their own padding, so no gap inside, keeping the title from getting too wide */}
       <Box flexDirection="row" alignItems="center" gap={term ? 1 : 0} flexShrink={0}>
         {canSwitch ? arrow(-1) : null}
         <Box flexShrink={0} width={bandNameWidth(show, term)} justifyContent="center"><Text color={identityText(show.key)} wrap="truncate-end">{t.name}</Text></Box>
@@ -643,9 +643,9 @@ function drawBand($: any, e: any, show: BandShow, paneOpen = false) {
     : show.elapsed == null ? L(`${full}：已用 ${show.used}%`, `${full}: ${show.used}% used`)
     : L(`${full}：已用 ${show.used}%，已过 ${show.elapsed}%`, `${full}: ${show.used}% used, ${show.elapsed}% elapsed`)
   const t = bandTexts(show)
-  // 一行字 + 进度条;详情进面板,隐藏后从面板恢复。
-  // 桌面端:字先按自身宽度排好,进度条从 0 起只吃剩下的空间(至少 BAR_MIN 格);放不下「已过」就整段不显示(见 bandLayout)。
-  // 终端:进度条是定宽的字,按 bodyColumns(面板停靠在旁边时是对话那一栏的宽度)算好再排
+  // One text line + bar; details go in the pane, restore from the pane after hiding.
+  // Desktop: text is laid out at its own width first, the bar grows from 0 into the remaining space (at least BAR_MIN cells); if "elapsed" doesn't fit, the whole segment is hidden (see bandLayout).
+  // Terminal: the bar is fixed-width text, sized from bodyColumns (the conversation column's width when the pane is docked beside it)
   const lay = bandLayout(show, e.props?.bodyColumns ?? (term ? 80 : 120), term)
   const pace = used != null && elapsed != null ? ({ used, elapsed } as P.Pace) : null
   return (
@@ -666,10 +666,10 @@ function drawBand($: any, e: any, show: BandShow, paneOpen = false) {
 }
 
 // ======================================================================
-// 绘制:面板
+// Rendering: pane
 // ======================================================================
 
-/** 面板底部的提示:这个配额超过半小时没用时,说上次用是多久前(刷新的进行中显示在刷新按钮上,不占这一行) */
+/** Pane footer note: when this quota has been unused for over half an hour, say how long ago it was last used (refresh progress shows on the Refresh button, not this line) */
 function noteLine(row: QuotaRow | undefined, samples: readonly Sample[], activity: Activity, now: number): string | null {
   if (!row) return null
   const lu = P.lastUsed(samples, row.key, activity)
@@ -711,12 +711,12 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
   const label = P.accessibilityLabel(d, row.full)
   const second = pace ? P.forecast(pace) : P.displayDetail(d)
   const trend = trendOf(samples, row)
-  // 趋势只是补充说明,不另加颜色(琥珀和配额蓝几乎互补,放在一起最显廉价)
+  // Trend is only supplementary, no extra color (amber and the quota blue are near-complementary and look cheapest together)
   const trendLine = trend && trend !== 'steady' ? <Text dimColor>{trendText(trend)}</Text> : null
   const showBadge = !P.isVerifiedByData(row.len.source)
   const canSwitch = m.keys.length > 1
   const target = (offset: number) => P.neighbor(row.key, m.keys, offset) as string
-  // 读数取整,和横条一致
+  // Readings rounded, matching the band
   const metrics = pace
     ? [
         { v: `${Math.round(pace.used * 100)}%`, l: L('已用', 'Used'), accent: true },
@@ -753,7 +753,7 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
     : d.kind === 'usageOnly' ? { kind: 'pct' as const, text: `${Math.round(d.obs.u)}%` } : { kind: 'none' as const }
   return (
     <Box flexDirection="column" alignItems="center" gap={2}>
-      {/* 切换配额的箭头在标题两侧(见 drawPane);这一行只放图,居中 */}
+      {/* Quota-switch arrows flank the title (see drawPane); this row holds only the image, centered */}
       <Box flexDirection="row" justifyContent="center" width="100%">
         {pic($, e, ringsSvg({ used, elapsed: pace?.elapsed ?? null, status: st, id, center, label: P.displayLabel(d), title: label, readings: pace ? metrics.map(x => ({ label: x.l.toUpperCase(), value: x.v, accent: !!x.accent })) : [] }), label)}
       </Box>
@@ -771,7 +771,7 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
   const { Box, Text, Button, Select } = $.ui.resolve(e)
   const o = P.buildOverlay(row.key, samples, row.len.seconds, view.range, view.offset, now)
   const ranges: P.Range[] = ['current', 'month', 'all']
-  // 桌面端标题两侧已有箭头,不再另放;终端用下拉;没有 Select 的表面(手机)退回左右按钮
+  // Desktop already has arrows beside the title, so none here; terminal uses a dropdown; surfaces without Select (mobile) fall back to prev/next buttons
   const quotaPick = m.keys.length < 2 || e.surface !== 'terminal' ? null : Select ? (
     <Select key="quota" options={m.keys.map(k => ({ value: k, label: P.pickName(k, m.rows[k].obs?.n) }))} value={row.key} onSelect={(k: string) => quiet(selectQuota($, k))} />
   ) : (
@@ -806,8 +806,8 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
       </Box>
     )
   }
-  // 「近一月 / 全部」平时是普通图片(不随横条、面板重画而闪);鼠标移到图上,左上角浮出「逐条查看」,
-  // 点了才换成可悬停的框:指到哪条线,那条加粗、标出日期和峰值,其余变淡
+  // "Last month / All" is normally a plain image (no flicker on band or pane redraws); hovering the chart reveals "Inspect lines" at top left,
+  // and only clicking it swaps in the hoverable frame: the line under the pointer goes bold with its date and peak, the rest fade
   const W = row.len.seconds
   const caption = P.overlayCaption(o)
   if (e.surface === 'terminal') {
@@ -825,13 +825,13 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
   const title = L(`${row.full} 用量轨迹`, `${row.full} burn-up`)
   const input = { width: 360, overlay: o, W, status: P.displayStatus(row.d), id: identity(row.key), title }
   const plain = burnUpSvg(input)
-  // 可悬停的版本多了感应线和标签;它超了上限就不给逐条查看,普通图照常画
+  // The hoverable version adds hit lines and labels; if it exceeds the cap, no inspect mode, the plain chart draws as usual
   const live = view.range !== 'current' && o.entries.length > 1 ? burnUpSvg({ ...input, interactive: true }) : null
   const canExplore = live != null && live.length <= SVG_MAX
   const exploring = canExplore && !!view.explore
   const svg = exploring && live ? live : plain
   const alt = caption ? `${title}. ${caption}` : title
-  // Svg 源码上限 131072 字符,超了整棵树会被引擎拒绝;叠画已限量,这里再兜一次底
+  // Svg source is capped at 131072 chars; over that the engine rejects the whole tree. Overlays are already limited, this is a final backstop
   if (svg.length > SVG_MAX) {
     return (
       <Box flexDirection="column" gap={1}>
@@ -866,8 +866,8 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
   )
 }
 
-/** 署名:面板最底下右下角,推特账号,一行 10px 的半透明小字(画成图;不需要点) */
-// 面板绘制时读到的版本号(读 versionA 也让面板在它写入后重画)
+/** Credit: bottom-right of the pane, the X handle, one line of 10px translucent text (drawn as an image; not clickable) */
+// Version read at pane render (reading versionA also redraws the pane once it's written)
 let paneVersion = ''
 
 function credit($: any, e: any) {
@@ -882,7 +882,7 @@ function credit($: any, e: any) {
 
 function drawPane($: any, e: any, samples: readonly Sample[], activity: Activity, view: PaneView, note: Note, band: BandMode, m: Model, now: number) {
   const { Box, Text, Button } = $.ui.resolve(e)
-  // 至少和面板正文一样高(宿主给的行数;Box 的尺寸在各个界面上都按行算),署名前的空白把它推到最底下
+  // At least as tall as the pane body (row count from the host; Box sizes are in rows on every surface); the spacer before the credit pushes it to the bottom
   const fill = e.props?.scroll?.bodyRows ? Math.max(1, e.props.scroll.bodyRows) : '100%'
   paneActions.clear()
   paneSurface = e.surface
@@ -910,9 +910,9 @@ function drawPane($: any, e: any, samples: readonly Sample[], activity: Activity
       </Box>
     )
   }
-  // 桌面端:切换配额的箭头在标题两侧,和横条一样;名字那格按最长的配额名定宽,切换时箭头不挪。
-  // (箭头早先在圆环那一行的两端;读数排进图里以后图宽了一半,箭头被挤得贴住圆环)
-  // 终端配速页另有带名字的按钮(h / l),标题不加箭头
+  // Desktop: quota-switch arrows flank the title, as on the band; the name cell is sized to the longest quota name so arrows don't move on switch.
+  // (Arrows used to sit at both ends of the ring row; once readings moved into the image it grew 50% wider and squeezed the arrows against the ring)
+  // The terminal pace tab has its own named buttons (h / l), so no title arrows
   const headArrows = !term && m.keys.length > 1
   const headArrow = (offset: -1 | 1) => {
     const name = offset < 0 ? 'prev' : 'next'
@@ -957,7 +957,7 @@ function drawPane($: any, e: any, samples: readonly Sample[], activity: Activity
 }
 
 // ======================================================================
-// 钩子
+// Hooks
 // ======================================================================
 
 
@@ -968,7 +968,7 @@ const commandSpec = () => ({
   immediate: true,
 })
 
-// 定时器的句柄:同一环境里再收到 session.start(启用、进程重启)时先停掉旧的,不叠加
+// Timer handles: on another session.start in the same environment (enable, process restart), cancel the old ones first so they don't stack
 let timers: { cancel: () => void }[] = []
 
 export const register: Register = on => {
@@ -980,7 +980,7 @@ export const register: Register = on => {
     } catch {}
     try { await refreshLang($) } catch {}
     await $.command.register(commandSpec())
-    // 重载前留下的「刷新中」「确认隐藏」不会再有人收尾
+    // "Refreshing" / "confirm hide" left from before the reload will never be cleared otherwise
     try { await update($, noteA, () => null) } catch {}
     try { await update($, confirmHideA, () => false) } catch {}
     try { await loadState($) } catch {}
@@ -989,7 +989,7 @@ export const register: Register = on => {
     try { await sampleCache($) } catch {}
     try { await refreshBand($) } catch {}
     try { await syncPaneOpen($) } catch {}
-    // 装好后第一次:说一声横条是什么、数据什么时候出来、入口在哪
+    // First run after install: say what the band is, when data shows up, and where the entry point is
     if ((await $.store.get('welcomed')) !== true) {
       await $.store.set('welcomed', true)
       $.ui.toast(L(
@@ -1001,20 +1001,20 @@ export const register: Register = on => {
     timers = [
       $.clock.every(5 * 60_000, () => { void sampleCache($).catch(() => {}) }),
       $.clock.every(10 * 60_000, () => { void importHistory($).catch(() => {}) }),
-      // 每分钟:并进别的会话记的采样;「已过 %」随时间走,重算横条,显示没变就什么都不写
+      // Every minute: merge samples recorded by other sessions; "elapsed %" moves with time, so recompute the band, writing nothing if the display is unchanged
       $.clock.every(60_000, () => { void adoptStoredSamples($).then(() => refreshBand($)).catch(() => {}) }),
     ]
     return next(e)
   })
 
-  // 每轮回复都在用额度(子代理也算):记下时刻和模型,判断「上次使用」
+  // Every reply uses quota (subagents too): record time and model to determine "last used"
   on('turn.complete', async ($, e, next) => {
     if (disabled) return next(e)
     try { if (e.usage) await recordActivity($, e.usage.model) } catch {}
     return next(e)
   })
 
-  // 每次回复后官方报的限额窗口一变(≥ 1 个百分点),就记一次采样
+  // After each reply, record a sample whenever the officially reported limit windows change (≥ 1 percentage point)
   on('session.measure', async ($, e, next) => {
     if (disabled) return next(e)
     try { await recordRateLimits($, e.rateLimits, await $.clock.now()) } catch {}
@@ -1039,14 +1039,14 @@ export const register: Register = on => {
     return { text: L('WeekToken 配速面板已打开', 'WeekToken pace pane opened') }
   })
 
-  // 面板第一次点击只拿焦点的补救(说明见 paneActions):记下面板上的每次按下……
+  // Workaround for the pane's first click only taking focus (see paneActions): record every press on the pane…
   on('ui.press', async ($, e, next) => {
     if (disabled || e.plugin !== 'weektoken') return next(e)
     const at = await $.clock.now()
     if (e.component === 'Pane') lastPanePress = { el: e.element, at }
     return next(e)
   })
-  // ……焦点落到按钮上、前后都没等到它的按下,而面板之前并没有键盘,就替它按一次
+  // …if focus lands on a button with no press before or after, and the pane didn't have the keyboard, press it once on its behalf
   on('ui.focus', async ($, e, next) => {
     const el = e.element
     if (disabled || e.plugin !== 'weektoken' || e.component !== 'Pane' || !el || e.origin.kind !== 'person' || paneSurface === 'terminal') return next(e)
@@ -1054,10 +1054,10 @@ export const register: Register = on => {
     const r = await next(e)
     const at = await $.clock.now()
     const pressed = (since: number) => lastPanePress != null && lastPanePress.el === el && lastPanePress.at >= since
-    // 面板本来就有键盘:Tab / 方向键在走焦点,或者一次自带 ui.press 的点击——都不替它按
+    // Pane already had the keyboard: Tab / arrow keys moving focus, or a click that brings its own ui.press. Don't press in either case
     if (hadKeyboard || pressed(at - 300)) return r
     $.clock.after(250, () => {
-      if (pressed(at)) return // 随后自己到了
+      if (pressed(at)) return // arrived on its own afterwards
       const act = paneActions.get(el)
       if (!act) return
       void act()
@@ -1065,16 +1065,16 @@ export const register: Register = on => {
     return r
   })
 
-  // 在 /config 里改了 Claude Code 的语言:设置原样交给引擎,稍后(新值已生效)重新探测,
-  // 横条和面板随之重画,命令说明也换成新语言
+  // Claude Code's language changed in /config: pass the setting to the engine unchanged, re-detect shortly after (once the new value applies);
+  // band and pane redraw accordingly, and the command description switches language too
   on('config.set', { key: 'language' }, async ($, e, next) => {
     if (!disabled) $.clock.after(300, () => { void refreshLang($).then(changed => (changed ? $.command.register(commandSpec()) : undefined)).catch(() => {}) })
     return next(e)
   })
 
-  // 横条只读这几样:显示/隐藏、确认提示、语言、要画的内容(已取整)。采样和面板状态都不读。
-  // 画完自己,把排在后面的 mod 和引擎自己要画的接在下面,不挡别人(下面有没有东西都包同一个 Box)
-  // 面板关掉时(横条上「收起」、面板的 ×、卸载)横条按钮改回「详情」;关闭原样交给引擎
+  // The band reads only these: shown/hidden, confirm prompt, language, content to draw (already rounded). Not samples or pane state.
+  // After drawing itself it appends what later mods and the engine draw below, without blocking them (same wrapping Box whether or not anything is below)
+  // When the pane closes (band "Close", the pane's ×, unload) the band button reverts to "Details"; the close passes through to the engine unchanged
   on('ui.close', { id: PANE }, async ($, e, next) => {
     if (!disabled) { try { await update($, paneOpenA, () => false) } catch {} }
     return next(e)

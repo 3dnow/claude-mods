@@ -1,4 +1,4 @@
-// 纯函数:解析、合并、推断、画图上限。不经过引擎,直接调用 hooks 里的模块。
+// Pure functions: parsing, merging, inference, chart size limits. Calls hooks modules directly, bypassing the engine.
 import { expect, test } from 'claude-code/testing'
 
 import * as P from '../hooks/pace.ts'
@@ -8,7 +8,7 @@ import { identity } from '../hooks/theme.ts'
 const NOW = Date.UTC(2026, 9, 3, 12, 0, 0)
 const W5 = 18000
 
-/** 连续使用的 5 小时采样:每 stepMin 分钟一条,窗口首尾相接,窗口内用量线性涨到 70% */
+/** Continuous 5-hour samples: one every stepMin minutes, back-to-back windows, usage rising linearly to 70% in each */
 function fiveHourHistory(stepMin: number, n = 8000): P.Sample[] {
   const out: P.Sample[] = []
   const t0 = NOW - n * stepMin * 60_000
@@ -24,7 +24,7 @@ function fiveHourHistory(stepMin: number, n = 8000): P.Sample[] {
 const svgOf = (samples: P.Sample[], range: P.Range) =>
   burnUpSvg({ width: 360, overlay: P.buildOverlay('five_hour', samples, W5, range, 0, NOW), W: W5, status: 'onPace', id: identity('five_hour'), title: '5h' })
 
-test('用量轨迹:8000 条采样、范围「全部」也不超过 Svg 源码上限', () => {
+test('Burn-up chart: 8000 samples with range "all" stay under the Svg source size limit', () => {
   for (const step of [5, 10, 13, 14, 15]) {
     expect(svgOf(fiveHourHistory(step), 'all').length).toBeLessThan(131072)
   }
@@ -34,25 +34,25 @@ test('用量轨迹:8000 条采样、范围「全部」也不超过 Svg 源码上
   expect(P.overlayCaption(o) ?? '').toContain(String(o.inRange))
 })
 
-test('用量轨迹:采样稀疏(间隔超过 15 分钟)时历史窗口仍画得出线', () => {
+test('Burn-up chart: past windows still draw lines when samples are sparse (gaps over 15 minutes)', () => {
   const svg = svgOf(fiveHourHistory(20, 2000), 'all')
   expect((svg.match(/<polyline/g) ?? []).length).toBeGreaterThan(10)
 })
 
-test('几个会话在不同毫秒记下同一份读数:合并后只留一条', () => {
+test('Same reading recorded by several sessions at different milliseconds merges into one sample', () => {
   const r = NOW + 3600_000
   const a = [{ t: NOW, w: { five_hour: { u: 40, r } } }]
   const b = [{ t: NOW + 37, w: { five_hour: { u: 40, r } } }]
   expect(P.mergeSamples(a, b).length).toBe(1)
-  // 读数变了、或者隔了 5 分钟以上,都要留
+  // Keep both if the reading changed or they are over 5 minutes apart
   expect(P.mergeSamples(a, [{ t: NOW + 37, w: { five_hour: { u: 41, r } } }]).length).toBe(2)
   expect(P.mergeSamples(a, [{ t: NOW + 6 * 60_000, w: { five_hour: { u: 40, r } } }]).length).toBe(2)
-  // 键不同(会话只有 5h/7d,缓存还有 Fable)不算重复
+  // Different keys (session has only 5h/7d, cache also has Fable) are not duplicates
   expect(P.mergeSamples(a, [{ t: NOW + 37, w: { five_hour: { u: 40, r }, weekly_fable: { u: 3, r } } }]).length).toBe(2)
 })
 
-test('/usage 的重置时刻:按括号里的时区取「今天」,刚过去的日期不跳到明年', () => {
-  const now = Date.UTC(2026, 9, 3, 23, 30) // 新加坡已是 10-04 07:30
+test('/usage reset time: "today" follows the parenthesized time zone, and a just-passed date does not roll to next year', () => {
+  const now = Date.UTC(2026, 9, 3, 23, 30) // already 10-04 07:30 in Singapore
   expect(P.parseResetText('10:00pm (Asia/Singapore)', now)).toBe(Date.UTC(2026, 9, 4, 14, 0))
   expect(P.parseResetText('10:00pm (UTC)', Date.UTC(2026, 9, 3, 17, 30))).toBe(Date.UTC(2026, 9, 3, 22, 0))
   expect(P.parseResetText('Sep 30 at 5:00pm (UTC)', NOW)).toBe(Date.UTC(2026, 8, 30, 17, 0))
@@ -63,14 +63,14 @@ test('/usage 的重置时刻:按括号里的时区取「今天」,刚过去的�
   expect(P.parseResetText('in 2h 30m', NOW)).toBeUndefined()
 })
 
-test('/usage 的输出:行尾空白、颜色转义不影响识别', () => {
+test('/usage output: trailing whitespace and color escapes do not break parsing', () => {
   const s = P.parseUsageCommand('\x1b[1mCurrent session: 3% used  \x1b[0m\r\nCurrent week (Fable): 29% used · resets Oct 5 at 12:00pm (UTC)   \n', NOW)
   expect(s?.w.five_hour?.u).toBe(3)
   expect(s?.w.weekly_fable?.u).toBe(29)
   expect(s?.w.weekly_fable?.r).toBe(Date.UTC(2026, 9, 5, 12, 0))
 })
 
-test('「上次使用」:两个来源精度不同交替出现不算上涨,真涨了才算', () => {
+test('"Last used": alternating readings from two sources with different precision are not a rise, only a real increase is', () => {
   const r = NOW + 86400_000
   const s = (t: number, u: number) => ({ t, w: { seven_day: { u, r } } })
   const flat = [s(NOW, 64.2), s(NOW + 60_000, 64), s(NOW + 120_000, 64.2)]
@@ -79,13 +79,13 @@ test('「上次使用」:两个来源精度不同交替出现不算上涨,真涨
   expect(P.lastUsed(rising, 'seven_day')).toEqual({ at: NOW + 180_000, isLowerBound: false })
 })
 
-test('「上次使用」:配额键带前缀(weekly_claude_fable)也对得上 Fable 模型的回复', () => {
+test('"Last used": a prefixed quota key (weekly_claude_fable) still matches Fable model replies', () => {
   const samples = [{ t: NOW, w: { weekly_claude_fable: { u: 10, r: NOW + 86400_000 } } }]
   const act = { byModel: { fable: NOW + 600_000 } }
   expect(P.lastUsed(samples, 'weekly_claude_fable', act)).toEqual({ at: NOW + 600_000, isLowerBound: false })
 })
 
-test('macOS 版历史:t 是毫秒也认,时间离谱的行丢掉', () => {
+test('macOS history: t in milliseconds is accepted, rows with implausible times are dropped', () => {
   const rows = [
     { t: NOW / 1000, rl: { five_hour: { used_percentage: 10 } } },
     { t: NOW + 60_000, rl: { five_hour: { used_percentage: 11 } } },
@@ -96,8 +96,8 @@ test('macOS 版历史:t 是毫秒也认,时间离谱的行丢掉', () => {
   expect(out.map(s => s.t)).toEqual([NOW, NOW + 60_000])
 })
 
-test('窗口长度:重置后首次使用的空档恒定时,不把「W + 空档」当成窗口长度', () => {
-  // 每 20 分钟一条;重置后要到下一个采样点才有人用,新窗口从那时起算:跳变恒为 5 小时 20 分
+test('Window length: a constant gap before first use after reset is not mistaken for a "W + gap" window', () => {
+  // One sample every 20 minutes; after a reset, use resumes at the next sample and the new window starts there: jumps are always 5h 20m
   const samples: P.Sample[] = []
   let r = NOW + W5 * 1000
   for (let i = 0; i < 200; i++) {
@@ -108,7 +108,7 @@ test('窗口长度:重置后首次使用的空档恒定时,不把「W + 空档�
   expect(P.inferWindow('five_hour', samples).seconds).toBe(W5)
 })
 
-test('本地缓存:同一分模型配额顶层和 limits[] 各给一份时只留一份', () => {
+test('Local cache: a per-model quota given both at top level and in limits[] is kept only once', () => {
   const w = P.parseUtilization({
     seven_day_opus: { utilization: 12, resets_at: NOW + 86400_000 },
     limits: [{ kind: 'weekly_scoped', percent: 12, resets_at: NOW + 86400_000, scope: { model: { display_name: 'Opus' } } }],

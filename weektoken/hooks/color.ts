@@ -1,5 +1,5 @@
-// 色彩工具:sRGB ↔ OKLCH(Björn Ottosson 的参考公式),以及 Material 3 的色相协调。纯函数。
-// 用途:横条超出段的「同色深一档」和用尽时「协调过的暖色」,都从配额自己的颜色算出来。
+// Color utils: sRGB ↔ OKLCH (Björn Ottosson's reference formulas), plus Material 3 hue harmonization. Pure functions.
+// Used for the band's overrun segment ("same hue, one shade darker") and the exhausted "harmonized warm color", both derived from the quota's own color.
 
 const toLin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
 const toSrgb = (c: number) => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055)
@@ -15,7 +15,7 @@ export function hexToOklch(hex: string): [number, number, number] {
   return [L, Math.hypot(A, B), ((Math.atan2(B, A) * 180) / Math.PI + 360) % 360]
 }
 export function oklchToHex(L: number, C: number, H: number): string {
-  // 超出色域时降彩度,保住明度和色相
+  // Out of gamut: reduce chroma, keep lightness and hue
   for (let c = C; c >= 0; c -= 0.002) {
     const A = c * Math.cos((H * Math.PI) / 180), B = c * Math.sin((H * Math.PI) / 180)
     const l = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3
@@ -26,7 +26,7 @@ export function oklchToHex(L: number, C: number, H: number): string {
   }
   return '#000000'
 }
-/** Material 3 的 harmonize:色相朝参考色转,最多 15°(取两者夹角的一半与 15° 的较小值),明度和彩度不变 */
+/** Material 3 harmonize: rotate hue toward the reference color, at most 15° (the smaller of half the angle between them and 15°); lightness and chroma unchanged */
 export function harmonizeHue(h: number, toward: number): number {
   const diff = ((toward - h + 540) % 360) - 180
   return (h + Math.sign(diff) * Math.min(Math.abs(diff) * 0.5, 15) + 360) % 360

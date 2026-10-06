@@ -1,5 +1,5 @@
-// 配色:WeekToken macOS 版 PaceTheme / PaceVisuals 的色值。
-// 状态色(配速驱动)深浅模式通用;配额身份色分浅/深两版。
+// Colors: values from PaceTheme / PaceVisuals in the WeekToken macOS app.
+// Status colors (pace-driven) are shared by light and dark mode; quota identity colors have light/dark variants.
 
 import type { Status } from './pace.ts'
 
@@ -24,7 +24,7 @@ const FIXED: Record<string, Identity> = {
   weekly_fable: { light: tri('8B7DD8', '342A78', '4A3AA7'), dark: tri('B3ABF0', '6A5FC0', '9085E9') },
 }
 
-// 其它键按名字散列到四个槽(start-light, start-dark, end-light, end-dark, solid-light, solid-dark)
+// Other keys hash by name into four slots (start-light, start-dark, end-light, end-dark, solid-light, solid-dark)
 const SLOTS: [string, string, string, string, string, string][] = [
   ['F08A5C', 'E07A4A', 'C24E1C', 'B84518', 'EB6834', 'D95926'], // orange
   ['F0A4C0', 'E58FB0', 'D05A85', 'C04A75', 'E87BA4', 'D55181'], // magenta
@@ -41,6 +41,6 @@ export function identity(key: string): Identity {
   return { light: tri(s[0], s[2], s[4]), dark: tri(s[1], s[3], s[5]) }
 }
 
-/** 给原生 Text 用的单色:取深色版的 solid,深浅背景上都够亮够清楚 */
+/** Single color for native Text: the dark variant's solid, bright and legible on both light and dark backgrounds */
 export const identityText = (key: string) => identity(key).dark.solid
 export const statusText = (s: Status) => STATUS[s].solid

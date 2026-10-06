@@ -1,19 +1,19 @@
-// WeekToken 配速模型:WeekToken macOS 版 WeekTokenCore 的移植。
-// 算法、阈值、文案与原版一致(PaceModel / QuotaDisplay / PaceNarrator / QuotaCatalog /
-// Bottleneck / WindowInference / BurnUpSeries / BurnUpOverlay)。纯函数,不碰 `$`。
-// 时间:样本与重置时刻用毫秒时间戳;窗口长度 W 用秒。文案中英双语,按 i18n.ts 的当前语言出。
+// WeekToken pace model: a port of WeekTokenCore from the WeekToken macOS app.
+// Algorithms, thresholds and copy match the original (PaceModel / QuotaDisplay / PaceNarrator / QuotaCatalog /
+// Bottleneck / WindowInference / BurnUpSeries / BurnUpOverlay). Pure functions; never touches `$`.
+// Time: samples and reset times are ms timestamps; window length W is in seconds. Copy is bilingual zh/en, picked by the current language in i18n.ts.
 
 import { L } from './i18n.ts'
 
 export const FIVE_HOUR = 18000
 export const SEVEN_DAY = 604800
 
-/** 一次观测里的一个配额:用量 0–100,重置时刻(毫秒),服务端给的显示名 */
+/** One quota in an observation: usage 0–100, reset time (ms), display name from the server */
 export type Obs = { u: number; r?: number; n?: string }
-/** 一次采样:时间(毫秒)+ 各配额的观测 */
+/** One sample: time (ms) + per-quota observations */
 export type Sample = { t: number; w: Record<string, Obs> }
 
-// ---------- 窗口长度与来源 ----------
+// ---------- Window length and source ----------
 
 export type LengthSource =
   | { kind: 'declared' }
@@ -34,7 +34,7 @@ export function sourceBadge(s: LengthSource): string {
   }
 }
 
-/** UI 只在「没被本机数据验证过」时标出来源 */
+/** The UI shows the source only when it is not verified by local data */
 export const isVerifiedByData = (s: LengthSource): boolean =>
   (s.kind === 'measured' || s.kind === 'corroborated') && s.n >= 1
 
@@ -59,7 +59,7 @@ function robustUpperBound(jumps: number[]): number {
   return sorted[Math.max(1, Math.floor(sorted.length / 20))]
 }
 
-/** 由 resets_at 的跳变反推窗口长度:每次跳变给出区间 [跳变 − 采样空隙, 跳变],求交集 */
+/** Infer window length from resets_at jumps: each jump gives an interval [jump − sample gap, jump]; intersect them */
 export function inferWindow(key: string, samples: readonly Sample[]): WindowLength {
   const p = prior(key)
   const bounds: { lo: number; hi: number; jump: number }[] = []
@@ -83,19 +83,19 @@ export function inferWindow(key: string, samples: readonly Sample[]): WindowLeng
   const jumps = bounds.map(b => b.jump)
   const jMin = Math.min(...jumps)
   const jMax = Math.max(...jumps)
-  // 固定周期:跳变齐整,就是精确的 W。
-  // 但跳变比先验还长时不收:滚动窗口的跳变 = W + 重置后到首次使用的空档,空档恰好恒定(定时任务)时
-  // 也会很齐整,那是空档不是 W——交给下面的区间推断
+  // Fixed period: if the jumps are uniform, that is the exact W.
+  // But not when jumps exceed the prior: a rolling window's jump = W + idle gap from reset to first use; when that gap is constant (scheduled jobs)
+  // the jumps are uniform too, but that is the gap, not W — leave it to the interval inference below
   const mean = jumps.reduce((a, b) => a + b, 0) / n
   if (n >= 2 && jMax - jMin <= FIXED_PERIOD_TOLERANCE && mean <= p.seconds + FIXED_PERIOD_TOLERANCE) {
     if (Math.abs(mean - p.seconds) <= FIXED_PERIOD_TOLERANCE) return { seconds: p.seconds, source: { kind: 'corroborated', n } }
     return { seconds: mean, source: { kind: 'measured', n } }
   }
-  // 滚动窗口:下界取各区间下界的最大值,上界取稳健的最小跳变
+  // Rolling window: lower bound = max of the interval lower bounds, upper bound = robust minimum jump
   const lo = Math.max(...bounds.map(b => b.lo))
   const hi = robustUpperBound(jumps)
   if (lo - hi > BOUND_TOLERANCE) {
-    // 观测互相矛盾:退回恒成立的上界一侧
+    // Observations contradict each other: fall back to the upper bound, which always holds
     if (Math.abs(hi - p.seconds) <= BOUND_TOLERANCE) return { seconds: p.seconds, source: { kind: 'corroborated', n } }
     return { seconds: hi, source: { kind: 'measured', n } }
   }
@@ -105,18 +105,18 @@ export function inferWindow(key: string, samples: readonly Sample[]): WindowLeng
   return { seconds: Math.min(Math.max(p.seconds, lo), hi), source: { kind: 'measured', n } }
 }
 
-// ---------- 配速 ----------
+// ---------- Pace ----------
 
 export type Status = 'unknown' | 'early' | 'comfortable' | 'onPace' | 'overPace' | 'exhausted'
 
 export type Pace = {
-  /** U 用量占比 0–1 */
+  /** U: fraction used 0–1 */
   used: number
-  /** T 时间逝去占比 0–1 */
+  /** T: fraction of time elapsed 0–1 */
   elapsed: number
-  /** 窗口长度(秒) */
+  /** Window length (seconds) */
   W: number
-  /** 计算时刻(毫秒) */
+  /** Computation time (ms) */
   now: number
   delta: number
   burnRate: number | null
@@ -132,12 +132,12 @@ const clamp = (x: number, lo: number, hi: number) => Math.min(Math.max(x, lo), h
 
 export const earlyCutoff = (W: number) => Math.max(0.001, 300 / Math.max(W, 1))
 
-/** 官方限额预警标定(取自 claude 二进制):(utilization, timePct) */
+/** Official limit-warning calibration (from the claude binary): (utilization, timePct) */
 export function officialThresholds(W: number): [number, number][] {
   return W <= 6 * 3600 ? [[0.9, 0.72]] : [[0.75, 0.6], [0.5, 0.35], [0.25, 0.15]]
 }
 
-/** 超速倍率阈值:随窗口推进而收紧(1.67 → 1.43 → 1.25 → 1.1) */
+/** Over-pace ratio threshold: tightens as the window progresses (1.67 → 1.43 → 1.25 → 1.1) */
 export function overPaceThreshold(elapsed: number, W: number): number {
   const sorted = officialThresholds(W).sort((a, b) => a[1] - b[1])
   for (const [util, timePct] of sorted) if (elapsed <= timePct) return util / timePct
@@ -166,7 +166,7 @@ export function paceFromValues(used: number, elapsed: number, W: number, now: nu
   return { used, elapsed, W, now, delta, burnRate, timeToReset, runway, exhaustionAt, leadTime: delta * W, overPaceThreshold: over, status }
 }
 
-/** 由一次观测构造配速;没有重置时刻、或重置已过 → null(不夹成 100% 捏造) */
+/** Build pace from one observation; no reset time, or reset already passed → null (no fabricated clamp to 100%) */
 export function paceFromObs(o: Obs, W: number, now: number): Pace | null {
   if (o.r == null) return null
   const remaining = (o.r - now) / 1000
@@ -194,7 +194,7 @@ const STATUS_EN: Record<Status, string> = {
 }
 export const statusLabel = (s: Status): string => L(STATUS_ZH, STATUS_EN)[s]
 
-// ---------- 显示三态:配速 / 仅用量 / 空 ----------
+// ---------- Three display states: pace / usage only / empty ----------
 
 export type UsageOnlyReason =
   | { kind: 'notStarted' }
@@ -267,9 +267,9 @@ export function displayDetail(d: Display): string | null {
   }
 }
 
-// ---------- 解说 ----------
+// ---------- Narration ----------
 
-/** 1 天 2 小时 / 1 小时 30 分 / 5 分;英文 1d 2h / 1h 30m / 5m(截断,不四舍五入) */
+/** Chinese: 1 day 2 hours / 1 hour 30 min / 5 min; English: 1d 2h / 1h 30m / 5m (truncated, not rounded) */
 export function formatDuration(seconds: number): string {
   const s = Math.trunc(Math.abs(seconds))
   const days = Math.floor(s / 86400)
@@ -318,7 +318,7 @@ export function windowNote(len: WindowLength): string {
   return L(`窗口 ${span} · ${sourceBadge(len.source)}`, `Window ${span} · ${sourceBadge(len.source)}`)
 }
 
-/** 菜单栏那段短文本:配速差 Δ,前导空格是原版有意为之 */
+/** Short menu-bar text: pace delta Δ; the leading space is intentional, as in the original */
 export function menuBarText(d: Display): string {
   if (d.kind === 'empty') return ' —'
   if (d.kind === 'usageOnly') return ` ${Math.round(d.obs.u)}%`
@@ -335,7 +335,7 @@ export function pct(x: number): string {
   return v < 10 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`
 }
 
-/** 给读屏和 Svg alt 用的完整描述 */
+/** Full description for screen readers and Svg alt */
 export function accessibilityLabel(d: Display, name: string): string {
   if (d.kind === 'empty') return L(`${name}，暂无数据`, `${name}, no data yet`)
   if (d.kind === 'usageOnly') {
@@ -355,7 +355,7 @@ export function accessibilityLabel(d: Display, name: string): string {
   return parts.join(L('，', ', '))
 }
 
-// ---------- 配额目录 ----------
+// ---------- Quota catalog ----------
 
 export const isWeekly = (key: string) => key.startsWith('seven_day') || key.startsWith('weekly_')
 
@@ -371,7 +371,7 @@ export function displayName(key: string, serverName?: string): string {
   return key.replace(/_/g, ' ')
 }
 
-/** 下拉里选配额用的短名:Fable / All models / 5 hours */
+/** Short name for the quota picker dropdown: Fable / All models / 5 hours */
 export function pickName(key: string, serverName?: string): string {
   if (key === 'five_hour') return L('5 小时', '5 hours')
   if (key === 'seven_day') return L('全部模型', 'All models')
@@ -398,7 +398,7 @@ export function isKnown(key: string): boolean {
   return k.includes('five_hour') || k.includes('seven_day') || k.includes('week') || k.includes('session') || k === 'primary'
 }
 
-/** 历史里出现过重置时刻、且用过或是已知配额的键(滤掉 spend / extra_usage / 实验性零用量键) */
+/** Keys that had a reset time in history and were used or are known quotas (filters out spend / extra_usage / experimental zero-usage keys) */
 export function discoveredKeys(samples: readonly Sample[]): string[] {
   const hadReset = new Set<string>()
   const hadUse = new Set<string>()
@@ -418,7 +418,7 @@ export function neighbor(key: string, keys: readonly string[], offset: number): 
   return keys[(((i + offset) % keys.length) + keys.length) % keys.length]
 }
 
-/** 每个键最新的那次观测,及其观测时刻 */
+/** Latest observation for a key, with its observation time */
 export function latestObs(samples: readonly Sample[], key: string): { obs: Obs; at: number } | null {
   for (let i = samples.length - 1; i >= 0; i--) {
     const o = samples[i].w[key]
@@ -427,7 +427,7 @@ export function latestObs(samples: readonly Sample[], key: string): { obs: Obs; 
   return null
 }
 
-// ---------- 瓶颈:输入框上方那条显示哪个配额 ----------
+// ---------- Bottleneck: which quota the band above the input box shows ----------
 
 export function pickBottleneck(cands: readonly { key: string; pace: Pace | null }[]): string | null {
   const tier = (p: Pace | null) => (!p ? 3 : p.used >= 1 ? 0 : p.runway != null && p.runway < p.timeToReset ? 1 : 2)
@@ -449,7 +449,7 @@ export function pickBottleneck(cands: readonly { key: string; pace: Pace | null 
   return best ? best.key : null
 }
 
-// ---------- 用量轨迹(burn-up) ----------
+// ---------- Usage trajectory (burn-up) ----------
 
 export type Point = { elapsed: number; used: number; t: number }
 export type Trend = 'accelerating' | 'easing' | 'steady'
@@ -470,7 +470,7 @@ const WINDOW_TOLERANCE_MS = 90_000
 const RESET_DROP = 0.05
 const gapThreshold = (W: number) => Math.max(900, 0.02 * W)
 
-/** 各窗口(按 resets_at 聚类,90 秒内算同一个),新的在前 */
+/** Windows (clustered by resets_at; within 90 s counts as the same one), newest first */
 export function windowsOf(key: string, samples: readonly Sample[]): number[] {
   const resets = samples.map(s => s.w[key]?.r).filter((r): r is number => r != null).sort((a, b) => a - b)
   const out: number[] = []
@@ -541,13 +541,13 @@ export const rangeLabel = (r: Range): string =>
   L({ current: '本窗口', month: '近一月', all: '全部' }, { current: 'This window', month: 'Last month', all: 'All' })[r]
 
 export type OverlayEntry = { series: Series; recency: number; isCurrent: boolean }
-/** inRange:范围内的窗口数;叠画超过 MAX_OVERLAY 个时只均匀抽一部分画(entries 少于 inRange) */
+/** inRange: number of windows in range; beyond MAX_OVERLAY overlaid, only an evenly spaced subset is drawn (entries fewer than inRange) */
 export type Overlay = { entries: OverlayEntry[]; totalWindows: number; inRange: number; focused: OverlayEntry | null; current: OverlayEntry | null }
 
-/** 叠画的窗口数上限:Svg 源码有 131072 字符的上限,超了整个面板会被引擎拒绝 */
+/** Max overlaid windows: Svg source is capped at 131072 chars; past that the engine rejects the whole pane */
 export const MAX_OVERLAY = 60
 
-/** 从新到旧的窗口里均匀抽 n 个,保留最新和最旧 */
+/** Evenly pick n from windows ordered newest to oldest, keeping the newest and oldest */
 function spread(list: readonly number[], n: number): number[] {
   if (list.length <= n) return [...list]
   const out: number[] = []
@@ -590,7 +590,7 @@ export function windowLabel(reset: number, W: number, isCurrent: boolean): strin
   return `${md(reset - W * 1000)} – ${md(reset)}${isCurrent ? L('（本窗口）', ' (current)') : ''}`
 }
 
-/** 用量轨迹下的一句话:多窗口看峰值走势,单个过去窗口看峰值;当前窗口靠图和图例,不另加字 */
+/** Caption under the burn-up: peak trend for multiple windows, peak for a single past window; the current window relies on chart and legend, no extra text */
 export function overlayCaption(o: Overlay): string | null {
   if (o.entries.length > 1) {
     const first = Math.round(o.entries[0].series.peak * 100)
@@ -610,9 +610,9 @@ export function legendDates(o: Overlay): { from: string; to: string } | null {
   return { from: md(o.entries[0].series.reset), to: md(o.entries[o.entries.length - 1].series.reset) }
 }
 
-// ---------- 采样存储 ----------
+// ---------- Sample storage ----------
 
-/** 两次观测是否等价:同一组键、用量差 < 0.001、重置时刻差 ≤ 5 秒 */
+/** Whether two observations are equivalent: same key set, usage diff < 0.001, reset time diff ≤ 5 s */
 export function sameSample(a: Sample, b: Sample): boolean {
   const ka = Object.keys(a.w).sort()
   const kb = Object.keys(b.w).sort()
@@ -627,8 +627,8 @@ export function sameSample(a: Sample, b: Sample): boolean {
 }
 
 /**
- * 追加一次采样:与「同一组键」的最近一条等价且不足 5 分钟就跳过;超过上限从头裁。
- * 不同来源覆盖的键不同(会话实时只有 5h/7d,本地缓存还有 Fable),只跟同源的比才去得了重。
+ * Append a sample: skip if equivalent to the latest one with the same key set and under 5 minutes apart; trim from the front past the cap.
+ * Sources cover different keys (live session has only 5h/7d, local cache also has Fable), so dedup only works against the same source.
  */
 export function appendSample(list: readonly Sample[], s: Sample, max = 8000): Sample[] {
   const sig = Object.keys(s.w).sort().join()
@@ -643,8 +643,8 @@ export function appendSample(list: readonly Sample[], s: Sample, max = 8000): Sa
 }
 
 /**
- * 把两份采样并起来:同一毫秒的合成一条(后者为准);再按 appendSample 的规矩去重——
- * 几个会话各自在不同毫秒记下同一份读数时,5 分钟内只留最早那条。
+ * Merge two sample lists: samples at the same ms combine into one (the latter wins); then dedup by appendSample's rules —
+ * when several sessions record the same reading at different ms, only the earliest within 5 minutes is kept.
  */
 export function mergeSamples(a: readonly Sample[], b: readonly Sample[], max = 8000): Sample[] {
   const byT = new Map<number, Sample>()
@@ -666,7 +666,7 @@ export function mergeSamples(a: readonly Sample[], b: readonly Sample[], max = 8
   return out.length > max ? out.slice(out.length - max) : out
 }
 
-// ---------- 数据源解析 ----------
+// ---------- Data source parsing ----------
 
 function parseReset(v: unknown): number | undefined {
   if (typeof v === 'number' && v > 0) return v < 1e12 ? v * 1000 : v
@@ -688,7 +688,7 @@ export function quotaKey(kind: string | undefined, scopeName: string | undefined
   return kind ?? 'unknown'
 }
 
-/** 解析接口同构的用量响应(顶层键打底,limits[] 为准,含分模型配额) */
+/** Parse an API-shaped usage response (top-level keys as fallback, limits[] takes precedence, incl. per-model quotas) */
 export function parseUtilization(root: unknown): Record<string, Obs> {
   const out: Record<string, Obs> = {}
   if (!root || typeof root !== 'object') return out
@@ -709,14 +709,14 @@ export function parseUtilization(root: unknown): Record<string, Obs> {
     const key = quotaKey(typeof o.kind === 'string' ? o.kind : undefined, name)
     out[key] = { u: pctOf(o.percent), r: parseReset(o.resets_at), ...(name ? { n: name } : {}) }
   }
-  // 同一个分模型配额若顶层(seven_day_<x>)和 limits[](weekly_<x>)各给一份,只留 limits[] 的
+  // If a per-model quota appears both at top level (seven_day_<x>) and in limits[] (weekly_<x>), keep only the limits[] one
   for (const k of Object.keys(out)) {
     if (k.startsWith('seven_day_') && out['weekly_' + k.slice('seven_day_'.length)]) delete out[k]
   }
   return out
 }
 
-/** ~/.claude.json 的 cachedUsageUtilization:官方读 TTL 1 小时,过期当没有 */
+/** cachedUsageUtilization in ~/.claude.json: the official reader uses a 1-hour TTL; expired counts as absent */
 export function parseClaudeJsonCache(text: string, now: number): Sample | null {
   let root: unknown
   try { root = JSON.parse(text) } catch { return null }
@@ -730,8 +730,8 @@ export function parseClaudeJsonCache(text: string, now: number): Sample | null {
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 
-/** 某时区的墙上时间 → 毫秒时间戳;运行环境没有时区数据时按本地时区算 */
-/** 美国几个常见时区缩写 → IANA 名(Intl 不认缩写);同一地点的夏令时由 Intl 按日期自己算 */
+/** Wall-clock time in a time zone → ms timestamp; uses the local zone when the runtime has no time zone data */
+/** Common US time zone abbreviations → IANA names (Intl rejects abbreviations); Intl resolves DST for the location by date */
 const TZ_ALIAS: Record<string, string> = {
   PST: 'America/Los_Angeles', PDT: 'America/Los_Angeles',
   MST: 'America/Denver', MDT: 'America/Denver',
@@ -754,16 +754,16 @@ function zonedToUtc(y: number, mo: number, d: number, h: number, mi: number, tz?
   }
 }
 
-/** `/usage` 里的重置时刻:「Oct 7 at 5:59pm (Asia/Singapore)」,日期可省(当天),年份取最近的将来 */
+/** Reset time in `/usage`: "Oct 7 at 5:59pm (Asia/Singapore)"; the date may be omitted (today); year is the nearest future one */
 export function parseResetText(text: string, now: number): number | undefined {
   const m = /^(?:([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,\s*(\d{4}))?\s+at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?/i.exec(text.trim())
-  // 12 小时制带 am/pm;24 小时制必须写出分钟(17:59),免得把「2h 30m」里的 2 当成钟点
+  // 12-hour format carries am/pm; 24-hour format must include minutes (17:59), so the 2 in "2h 30m" isn't read as an hour
   if (!m || (!m[6] && m[5] == null)) return undefined
   const h = m[6] ? (Number(m[4]) % 12) + (m[6].toLowerCase() === 'pm' ? 12 : 0) : Number(m[4])
   if (h > 23) return undefined
   const mi = Number(m[5] ?? 0)
   const tz = m[7] ? (TZ_ALIAS[m[7].trim().toUpperCase()] ?? m[7].trim()) : undefined
-  // 「今天」「今年」按括号里那个时区算:主机时区和它不在同一天时,按主机算会差一天
+  // "Today" and "this year" use the time zone in parentheses: if the host zone is on a different date, the host would be off by a day
   const today = dateIn(now, tz)
   if (m[1]) {
     const mo = MONTHS.indexOf(m[1].toLowerCase())
@@ -771,14 +771,14 @@ export function parseResetText(text: string, now: number): number | undefined {
     const d = Number(m[2])
     if (m[3]) return zonedToUtc(Number(m[3]), mo, d, h, mi, tz)
     const t = zonedToUtc(today.y, mo, d, h, mi, tz)
-    // 只有早了半年以上才是明年的日子(12 月底看到「Jan 2」);刚过去几天的就是过去,交给显示判成「已重置」
+    // Only a date over half a year back is next year's ("Jan 2" seen in late Dec); a few days back is the past, left to the display to mark as reset
     return t < now - 180 * 86400_000 ? zonedToUtc(today.y + 1, mo, d, h, mi, tz) : t
   }
   const t = zonedToUtc(today.y, today.mo, today.d, h, mi, tz)
   return t < now ? t + 86400_000 : t
 }
 
-/** now 在某时区的年、月(0 起)、日;认不出时区就按主机时区 */
+/** Year, month (0-based), day of now in a time zone; an unrecognized zone falls back to the host zone */
 function dateIn(now: number, tz?: string): { y: number; mo: number; d: number } {
   if (tz) {
     try {
@@ -792,13 +792,13 @@ function dateIn(now: number, tz?: string): { y: number; mo: number; d: number } 
 }
 
 /**
- * `claude -p /usage` 的文字输出 → 一次采样:
- * 「Current session: 3% used · resets …」→ five_hour;「Current week (all models)」→ seven_day;
- * 「Current week (Fable)」→ weekly_fable(带显示名)。认不出就给 null。
+ * Text output of `claude -p /usage` → one sample:
+ * "Current session: 3% used · resets …" → five_hour; "Current week (all models)" → seven_day;
+ * "Current week (Fable)" → weekly_fable (with display name). Returns null if unrecognized.
  */
 export function parseUsageCommand(text: string, now: number): Sample | null {
   const w: Record<string, Obs> = {}
-  // 去掉颜色转义和行尾空白再认(\r 也算行尾空白)
+  // Strip color escapes and trailing whitespace before matching (\r counts as trailing whitespace)
   for (const raw of text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split('\n')) {
     const line = raw.trimEnd()
     const m = /^\s*Current (session|week \(([^)]+)\)):\s*([\d.]+)%\s*used(?:\s*[·•-]\s*resets\s+(.+))?$/i.exec(line)
@@ -811,27 +811,27 @@ export function parseUsageCommand(text: string, now: number): Sample | null {
   return Object.keys(w).length ? { t: now, w } : null
 }
 
-/** 分模型的周配额(如 weekly_fable):提示里要带上模型名 */
+/** Per-model weekly quota (e.g. weekly_fable): hints must include the model name */
 export const isModelScoped = (key: string) => key.startsWith('weekly_') && key !== 'weekly_scoped'
 
-/** 模型 id → 家族名(claude-fable-5-1 → fable),对上分模型配额 weekly_<家族> */
+/** Model id → family name (claude-fable-5-1 → fable), matching per-model quota weekly_<family> */
 export function modelFamily(model: string | undefined): string | null {
   const m = /(fable|opus|sonnet|haiku)/i.exec(model ?? '')
   return m ? m[1].toLowerCase() : null
 }
 
-/** 本机各会话里最近一次回复的时刻:any = 任何模型,byModel = 按家族 */
+/** Time of the latest reply across local sessions: any = any model, byModel = per family */
 export type Activity = { any?: number; byModel: Record<string, number> }
 
 /**
- * 这个配额上次被用的时刻,取两者较晚的:
- * · 本机最近一次回复(5 小时 / 7 天:任何模型;分模型配额:那个家族的模型)——限额百分比很粗,
- *   一直在用也可能半小时不涨 1%,只看上涨会误判成「没用」;
- * · 观测到的最后一次用量上涨(覆盖别的设备、claude.ai 上的使用)。
- * 都没有时,给最早的观测时刻作下界。
+ * When this quota was last used, taking the later of:
+ * · the latest local reply (5-hour / 7-day: any model; per-model quota: that family's models) — the limit percentage is coarse,
+ *   steady use may not raise it 1% in half an hour, so watching increases alone would misread it as unused;
+ * · the last observed usage increase (covers use on other devices and on claude.ai).
+ * If neither exists, return the earliest observation time as a lower bound.
  */
 export function lastUsed(samples: readonly Sample[], key: string, activity?: Activity): { at: number; isLowerBound: boolean } | null {
-  // 分模型配额按家族对上本机的回复:weekly_fable、weekly_claude_fable 都认作 fable
+  // Per-model quotas match local replies by family: weekly_fable and weekly_claude_fable both map to fable
   const act = isModelScoped(key) ? activity?.byModel[modelFamily(key) ?? key.slice('weekly_'.length)] : activity?.any
   const seen = lastIncrease(samples, key)
   if (act != null && (!seen || seen.isLowerBound || act >= seen.at)) return { at: act, isLowerBound: false }
@@ -839,8 +839,8 @@ export function lastUsed(samples: readonly Sample[], key: string, activity?: Act
 }
 
 /**
- * 最后一次用量上涨的时刻。和「上次算作上涨时的读数」比,涨够半个百分点才算:两个来源精度不同
- * (会话 64.2、缓存 64)交替出现时不会被当成上涨;窗口重置(掉了 5 点以上)就从新读数重新算起。
+ * Time of the last usage increase. Compared with the reading at the last counted increase, it must rise half a point: two sources of different precision
+ * (session 64.2, cache 64) alternating won't count as an increase; on a window reset (a drop of over 5 points) restart from the new reading.
  */
 function lastIncrease(samples: readonly Sample[], key: string): { at: number; isLowerBound: boolean } | null {
   let base: number | undefined
@@ -857,7 +857,7 @@ function lastIncrease(samples: readonly Sample[], key: string): { at: number; is
   return first != null ? { at: first, isLowerBound: true } : null
 }
 
-/** WeekToken macOS 版的 ~/.weektoken/samples.jsonl:每行 {t: 秒, rl: {key: {used_percentage, resets_at, display_name?}}} */
+/** ~/.weektoken/samples.jsonl from the WeekToken macOS app: each line {t: seconds, rl: {key: {used_percentage, resets_at, display_name?}}} */
 export function parseSamplesJsonl(text: string, nowMs = Date.now()): Sample[] {
   const out: Sample[] = []
   for (const line of text.split('\n')) {
@@ -865,7 +865,7 @@ export function parseSamplesJsonl(text: string, nowMs = Date.now()): Sample[] {
     let row: { t?: unknown; rl?: unknown }
     try { row = JSON.parse(line) } catch { continue }
     if (typeof row.t !== 'number' || !row.rl || typeof row.rl !== 'object') continue
-    // 约定是秒;万一是毫秒也认,时间离谱(2020 年以前或明天以后)的行丢掉
+    // Convention is seconds; ms is accepted too. Drop rows with absurd times (before 2020 or after tomorrow)
     const t = row.t > 1e12 ? row.t : row.t * 1000
     if (t < 1_577_836_800_000 || t > nowMs + 86400_000) continue
     const w: Record<string, Obs> = {}

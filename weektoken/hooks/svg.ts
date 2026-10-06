@@ -1,10 +1,10 @@
-// SVG 绘图:配速环、输入框上方的进度条、用量轨迹(burn-up,图例画在图内)。
-// 几何与配色取自 WeekToken macOS 版(PaceRings / PaceBullet / BulletRenderer / BurnUpChart)。
-// 深浅色:SVG 用 prefers-color-scheme 自适应,并声明 color-scheme: light dark——画在宿主沙箱框里的图
-// 若不声明,框的配色方案对不上应用时会垫一块白底、里面还按浅色画(深色应用里实测如此)。
-// 中性元素(轨道、网格、刻度字)用深浅背景都看得清的半透明灰。
-// 每个 SVG 用由输入算出的唯一 id 给样式和渐变/滤镜做作用域:宿主无论把它当独立图片
-// 还是内联进同一页面,彼此都不会串色。纯函数,只产出字符串。
+// SVG drawing: pace rings, the progress bar above the input box, usage trace (burn-up, legend drawn inside the chart).
+// Geometry and colors taken from the WeekToken macOS app (PaceRings / PaceBullet / BulletRenderer / BurnUpChart).
+// Light/dark: SVG adapts via prefers-color-scheme and declares color-scheme: light dark — a chart in the host sandbox frame
+// without it gets a white backdrop and light-mode drawing when the frame's scheme doesn't match the app (observed in dark app).
+// Neutral elements (track, grid, tick labels) use translucent gray readable on both light and dark backgrounds.
+// Each SVG scopes styles and gradients/filters with a unique id derived from its input: whether the host treats it as a standalone image
+// or inlines it into the same page, colors never leak between charts. Pure functions, output strings only.
 
 import { legendDates, windowLabel, type Overlay, type OverlayEntry, type Pace, type Series, type Status } from './pace.ts'
 import { STATUS, type Identity, type Tri } from './theme.ts'
@@ -16,7 +16,7 @@ const f = (n: number) => (Math.round(n * 100) / 100).toString()
 const clamp = (x: number, lo: number, hi: number) => Math.min(Math.max(x, lo), hi)
 const FONT = `-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', sans-serif`
 
-/** 由种类和输入算出的稳定 id:同样的图同样的 id,不同的图互不干扰 */
+/** Stable id derived from kind and input: same chart, same id; different charts never collide */
 function uidOf(kind: string, data: unknown): string {
   const s = kind + JSON.stringify(data)
   let h = 0x811c9dc5
@@ -24,7 +24,7 @@ function uidOf(kind: string, data: unknown): string {
   return `wt${kind}${(h >>> 0).toString(36)}`
 }
 
-/** 深浅两套中性色;identity 的深浅两版也一并挂成 CSS 变量;全部只作用于这一张图 */
+/** Light and dark neutral palettes; identity's light/dark variants also set as CSS vars; all scoped to this chart only */
 function themeStyle(uid: string, id?: Identity): string {
   const idVars = (t: 'light' | 'dark') => (id ? `--id-s:${id[t].start};--id-e:${id[t].end};--id:${id[t].solid};` : '')
   return `<style>
@@ -38,7 +38,7 @@ function themeStyle(uid: string, id?: Identity): string {
 const open = (uid: string, w: number, h: number) =>
   `<svg xmlns="http://www.w3.org/2000/svg" id="${uid}" width="${f(w)}" height="${f(h)}" viewBox="0 0 ${f(w)} ${f(h)}" style="color-scheme:light dark;background:transparent">`
 
-/** 从 12 点钟方向顺时针,进度 p 处的坐标 */
+/** Coordinates at progress p, clockwise from 12 o'clock */
 function polar(cx: number, cy: number, r: number, p: number): [number, number] {
   const a = 2 * Math.PI * p - Math.PI / 2
   return [cx + r * Math.cos(a), cy + r * Math.sin(a)]
@@ -64,24 +64,24 @@ function mix(a: string, b: string, t: number): string {
 }
 
 export type RingsInput = {
-  used: number | null // U(可能没有)
+  used: number | null // U (may be absent)
   elapsed: number | null // T
   status: Status
   id: Identity
   center: { kind: 'rate'; text: string } | { kind: 'pct'; text: string } | { kind: 'none' }
   label: string
   title: string
-  /** 环右边一列读数:小号标签在上、数字在下;accent 的那个用配额色。空数组只画环 */
+  /** Column of readings right of the ring: small label above, number below; the accent one uses the quota color. Empty array draws the ring only */
   readings: { label: string; value: string; accent?: boolean }[]
 }
 
 /**
- * 配速环,和横条同一套画法(只用配额自己的色系):
- * · 外环 = 用量 U:配额色角向渐变;没超速时从已用到已过画同色淡斜线(余量);
- *   超速时超出时间的一段画同色深一档 + 浅斜线;用尽时那段换协调过的暖色。
- * · 内环 = 时间 T:中性灰细环。两环都细、间距收紧,把中间留给数字。
- * · 中心:数字和状态当成一块垂直居中,字号按内环里面的直径定。
- * · 右边一列读数,字号分层(原生 Text 只有一种字号)。
+ * Pace rings, drawn the same way as the band bar (quota's own color family only):
+ * · Outer ring = usage U: angular gradient in quota color; under pace, faint same-hue stripes from used to elapsed (headroom);
+ *   over pace, the part past elapsed is one shade deeper + light stripes; when exhausted, that part uses the harmonized warm color.
+ * · Inner ring = time T: thin neutral gray ring. Both rings thin with tight spacing, leaving the center for numbers.
+ * · Center: number and status vertically centered as one block; font size based on the inner ring's inside diameter.
+ * · Column of readings on the right, with tiered font sizes (native Text has only one size).
  */
 export function ringsSvg(x: RingsInput): string {
   const u = uidOf('r', x)
@@ -97,21 +97,21 @@ export function ringsSvg(x: RingsInput): string {
   const T = x.elapsed == null ? null : clamp(x.elapsed, 0, 1)
   const over = T != null && U > T
   const exhausted = x.status === 'exhausted'
-  // 斜线:45°、周期 5px、线宽 2px(同横条)
+  // Stripes: 45°, 5px period, 2px line width (same as band bar)
   const stripes = (id: string, back: string, backOp: number, line: string, lineOp: number) =>
     `<pattern id="${id}" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
     `<rect width="5" height="5" fill="${back}" fill-opacity="${backOp}"/><rect width="2" height="5" fill="${line}" fill-opacity="${lineOp}"/></pattern>`
   const parts: string[] = []
   parts.push(`<defs>${stripes(u + 'm', 'var(--id)', 0.1, 'var(--id)', 0.55)}${stripes(u + 'x', 'var(--deep)', 1, 'var(--id-s)', 0.35)}</defs>`)
-  // 内环:时间
+  // Inner ring: time
   parts.push(`<circle cx="${f(c)}" cy="${f(c)}" r="${f(rI)}" fill="none" stroke="var(--track)" stroke-width="${f(rwIn)}"/>`)
   if (T != null && T > 0.002) parts.push(`<path d="${arcPath(c, c, rI, 0, Math.min(T, 0.9999))}" fill="none" stroke="var(--time)" stroke-width="${f(rwIn)}" stroke-linecap="round"/>`)
-  // 外环:轨道、余量、用量、超出
+  // Outer ring: track, headroom, usage, overage
   parts.push(`<circle cx="${f(c)}" cy="${f(c)}" r="${f(rO)}" fill="none" stroke="var(--track)" stroke-width="${f(rw)}"/>`)
   if (T != null && T > U) parts.push(`<path d="${arcPath(c, c, rO, Math.max(0, U - 0.01), Math.min(T, 0.9999))}" fill="none" stroke="url(#${u}m)" stroke-width="${f(rw)}"/>`)
   const upto = over ? (T as number) : U
   if (upto > 0.002) {
-    // 角向渐变用分段近似;深浅两套色值各画一组,按外观显示其一
+    // Angular gradient approximated by segments; one group each for light and dark colors, one shown per appearance
     const n = Math.max(2, Math.ceil(upto * 72))
     const grad = (t: Tri, cls: string) => {
       const segs: string[] = []
@@ -138,7 +138,7 @@ export function ringsSvg(x: RingsInput): string {
       parts.push(`<circle cx="${f(ex)}" cy="${f(ey)}" r="${f(rw / 2)}" fill="${paint}"/>`)
     }
   }
-  // 中心:数字 + 状态,当成一块垂直居中
+  // Center: number + status, vertically centered as one block
   const em = 0.25 * Di
   const lf = Math.max(10, 0.1 * Di)
   const lead = 0.07 * Di
@@ -150,11 +150,11 @@ export function ringsSvg(x: RingsInput): string {
     parts.push(`<text x="${f(c)}" y="${f(nb)}" text-anchor="middle" font-size="${f(em)}" font-weight="600" fill="${x.center.kind === 'pct' ? 'var(--ink)' : 'var(--ink3)'}" style="font-variant-numeric:tabular-nums;letter-spacing:-.02em">${esc(t)}</text>`)
   }
   parts.push(`<text x="${f(c)}" y="${f(nb + lead + 0.72 * lf)}" text-anchor="middle" font-size="${f(lf)}" font-weight="500" fill="var(--ink2)">${esc(x.label)}</text>`)
-  // 右边一列读数
+  // Column of readings on the right
   const LS = 10
   const VS = 22
   const rx = d + 24
-  // 中文标签 10px 太小,放到 11px;宽度估算偏窄(% 和粗体数字更宽),留余量
+  // Chinese labels too small at 10px, use 11px; width estimate runs narrow (% and bold digits are wider), so pad it
   const lsOf = (t: string) => (/[\u2E80-\u9FFF]/.test(t) ? 11 : LS)
   const colW = x.readings.reduce((a, r) => Math.max(a, textWidth(r.value, VS) * 1.15, textWidth(r.label, lsOf(r.label)) * 1.2), 0) + 6
   const step = 46
@@ -174,13 +174,13 @@ export function ringsSvg(x: RingsInput): string {
 }
 
 /**
- * 横条的进度条,照 Apple 健身圆环「超过了就同色深一档」的做法,只用配额自己的色系:
- * · 用得比时间慢:用量条后面、从已用到已过画同色淡斜线,是还剩的余量;
- * · 用得比时间快:超出时间的那段换成同色深一档(OKLCH 明度降 0.13),叠同色亮端的浅斜线;
- * · 用尽:那段实心暖色——柿子橙的色相按 Material 3 harmonize 朝配额颜色转,明度彩度对齐配额颜色。
- * 方法见 docs/COLOR-METHOD-2026-10-04.md。
- * width 给数字是定宽(收起时的小条);给 'fluid' 则宽度 100%、几何全用百分比,
- * 由宿主按横条剩余宽度拉伸,只变长不变形(圆角保持原样)。
+ * Band progress bar, following Apple Fitness rings' "past the goal = one shade deeper", quota's own color family only:
+ * · Using slower than time: faint same-hue stripes behind the usage bar from used to elapsed, the remaining headroom;
+ * · Using faster than time: the part past elapsed turns one shade deeper (OKLCH lightness down 0.13), with light stripes in the bright-end hue;
+ * · Exhausted: that part is solid warm — persimmon hue rotated toward the quota color via Material 3 harmonize, lightness/chroma matched to it.
+ * Method: see docs/COLOR-METHOD-2026-10-04.md.
+ * A numeric width is fixed (the small collapsed bar); 'fluid' gives 100% width with all geometry in percent,
+ * stretched by the host to the band's remaining width: only lengthens, never distorts (corner radii unchanged).
  */
 export function bandBarSvg(pace: Pace | null, used: number | null, status: Status, id: Identity, title: string, width: number | 'fluid' = 120): string {
   const u = uidOf('n', [pace?.used, pace?.elapsed, used, status, id, title, width])
@@ -190,10 +190,10 @@ export function bandBarSvg(pace: Pace | null, used: number | null, status: Statu
   const y = (h - bh) / 2
   const r = bh / 2
   const st = STATUS[status]
-  // 定宽时按像素算(含最小宽度),流式时按百分比
+  // Fixed width: pixels (with minimum width); fluid: percent
   const W = (frac: number, min = 0) => (fluid ? `${f(clamp(frac, 0, 1) * 100)}%` : f(Math.max(min, (width as number) * clamp(frac, 0, 1))))
   const X = (frac: number) => (fluid ? `${f(clamp(frac, 0, 1) * 100)}%` : f((width as number) * clamp(frac, 0, 1)))
-  // 斜线:45°、周期 5px、线宽 2px
+  // Stripes: 45°, 5px period, 2px line width
   const stripes = (id: string, back: string, backOp: number, line: string, lineOp: number) =>
     `<pattern id="${id}" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
     `<rect width="5" height="5" fill="${back}" fill-opacity="${backOp}"/><rect width="2" height="5" fill="${line}" fill-opacity="${lineOp}"/></pattern>`
@@ -207,11 +207,11 @@ export function bandBarSvg(pace: Pace | null, used: number | null, status: Statu
   if (pace) {
     const T = clamp(pace.elapsed, 0, 1)
     const U = clamp(pace.used, 0, 1)
-    // 余量:从已用画到已过,在用量条后面(用量条的圆头盖住接缝)
+    // Headroom: from used to elapsed, behind the usage bar (its round cap hides the seam)
     if (T > U) parts.push(`<g clip-path="url(#${u}t)"><rect y="${y}" width="${X(T)}" height="${bh}" fill="url(#${u}m)"/></g>`)
     if (U > 0) {
       parts.push(`<rect y="${y}" width="${W(U, bh)}" height="${bh}" rx="${r}" fill="url(#${u}u)"/>`)
-      // 超出:从已过画到已用,裁成用量条的形状,圆头不变
+      // Overage: from elapsed to used, clipped to the usage bar's shape, round cap kept
       if (U > T) {
         parts.push(`<clipPath id="${u}c"><rect y="${y}" width="${W(U, bh)}" height="${bh}" rx="${r}"/></clipPath>`)
         parts.push(`<g clip-path="url(#${u}c)"><rect x="${X(T)}" y="${y}" width="${X(U - T)}" height="${bh}" fill="${exhausted ? 'var(--warm)' : `url(#${u}x)`}"/></g>`)
@@ -220,8 +220,8 @@ export function bandBarSvg(pace: Pace | null, used: number | null, status: Statu
   } else if (used != null && used > 0) {
     parts.push(`<rect y="${y}" width="${W(used, bh)}" height="${bh}" rx="${r}" fill="url(#${u}u)"/>`)
   }
-  // 条很细,轨道要比面板里的深一些,才看得出整根有多长
-  // 流式条画成只给高度的普通图片(不用可交互框,框会随面板重画而闪):根元素不声明宽度,几何全用百分比
+  // Bar is thin, so the track is darker than in the panel to show the full length
+  // Fluid bar is a plain height-only image (no interactive frame, it flickers on panel redraw): root declares no width, all geometry in percent
   const ol = overTones(id.light)
   const od = overTones(id.dark)
   const track = `<style>#${u}{--track:rgba(0,0,0,.13);--deep:${ol.deep};--warm:${ol.warm}}@media (prefers-color-scheme: dark){#${u}{--track:rgba(255,255,255,.16);--deep:${od.deep};--warm:${od.warm}}}</style>`
@@ -232,8 +232,8 @@ export function bandBarSvg(pace: Pace | null, used: number | null, status: Statu
 }
 
 /**
- * 面板右下角的署名:10px、半透明的一行小字(原生 Text 定不了字号,也没有比 dimColor 更淡的)。
- * textLength 钉住宽度,换了字体只改字距,不会挤出图外。
+ * Credit line at the panel's bottom-right: one line of 10px translucent text (native Text can't set font size, and nothing is fainter than dimColor).
+ * textLength pins the width; a different font only changes spacing and never overflows the image.
  */
 export function creditSvg(text: string): string {
   const u = uidOf('c', text)
@@ -244,10 +244,10 @@ export function creditSvg(text: string): string {
     `<title>${esc(text)}</title><text x="${w - 1}" y="10.5" font-size="${size}" text-anchor="end" textLength="${w - 2}" lengthAdjust="spacingAndGlyphs">${esc(text)}</text></svg>`
 }
 
-/** 柿子橙的 OKLCH 色相:用尽时暖色的出发点,再朝配额颜色协调 */
+/** OKLCH hue of persimmon orange: starting point for the exhausted warm color, then harmonized toward the quota color */
 const WARM_HUE = 32.68
 
-/** 超出段的两个颜色:同色深一档(超速)、协调过的暖色(用尽),都由配额颜色算出 */
+/** Two colors for the overage part: one shade deeper (over pace) and harmonized warm (exhausted), both derived from the quota color */
 function overTones(t: Tri): { deep: string; warm: string } {
   const [L, C, H] = hexToOklch(t.solid)
   return {
@@ -263,13 +263,13 @@ export type BurnUpInput = {
   status: Status
   id: Identity
   title: string
-  /** 逐条查看:画进可交互的框,鼠标移到哪条线上,那条加粗并标出日期和峰值,其余变淡 */
+  /** Per-line inspection: drawn in an interactive frame; the hovered line thickens and shows its date and peak, others fade */
   interactive?: boolean
 }
 
 const f1 = (n: number) => (Math.round(n * 10) / 10).toString()
 
-/** 把只隔着数据空隙(不是窗口中途重置)的相邻几段接成一条 */
+/** Join adjacent segments separated only by data gaps (not mid-window resets) into one */
 function joinGaps(s: Series): Series['segments'] {
   const gapStarts = new Set(s.gaps.map(g => g.to))
   const out: Series['segments'] = []
@@ -280,12 +280,12 @@ function joinGaps(s: Series): Series['segments'] {
   return out
 }
 
-/** 估算文字宽度:中日韩字符按 1em,其余按 0.56em(图例换行用) */
+/** Estimate text width: CJK chars at 1em, others at 0.56em (for legend wrapping) */
 const textWidth = (s: string, size: number) => [...s].reduce((a, ch) => a + (/[\u2E80-\u9FFF\uFF00-\uFFEF]/.test(ch) ? size : size * 0.56), 0)
 
 /**
- * 用量轨迹:x = 窗口内时间位置,y = 用量;理想配速对角虚线;历史窗口按新旧深浅叠画;当前窗口带外推与耗尽线。
- * 图例画在同一张图的底部,线型和说明一一对上;宽度按面板常见宽度定,缩放时字也够大。
+ * Usage trace: x = time position in window, y = usage; dashed diagonal for ideal pace; past windows overlaid, opacity by recency; current window has projection and exhaustion line.
+ * Legend drawn at the bottom of the same chart, line styles matched one-to-one with labels; width set to the panel's usual width so text stays legible when scaled.
  */
 export function burnUpSvg(x: BurnUpInput): string {
   const u = uidOf('u', [x.width, x.W, x.status, x.id, x.title, getLang(), x.overlay.entries.map(e => [e.series.reset, e.series.segments.length, e.series.peak, e.recency]), !!x.interactive])
@@ -302,14 +302,14 @@ export function burnUpSvg(x: BurnUpInput): string {
   const TF = 10
   const p: string[] = []
   p.push(`<defs><linearGradient id="${u}r" x1="0" x2="1"><stop offset="0" stop-color="var(--id)" stop-opacity=".22"/><stop offset="1" stop-color="var(--id)"/></linearGradient></defs>`)
-  // 网格
+  // Grid
   for (let i = 1; i <= 3; i++) p.push(`<line x1="${left}" x2="${f(left + w)}" y1="${f(top + (h * i) / 4)}" y2="${f(top + (h * i) / 4)}" stroke="var(--grid)"/>`)
   for (let i = 1; i < Math.max(2, days); i++) {
     const gx = left + (w * i) / days
     if (gx < left + w - 0.5) p.push(`<line x1="${f(gx)}" x2="${f(gx)}" y1="${top}" y2="${f(top + h)}" stroke="var(--vgrid)"/>`)
   }
   p.push(`<rect x="${left}" y="${top}" width="${f(w)}" height="${f(h)}" fill="none" stroke="var(--grid)"/>`)
-  // 刻度
+  // Ticks
   for (const v of [0, 50, 100]) p.push(`<text x="${left - 5}" y="${f(Y(v / 100) + 3.5)}" text-anchor="end" font-size="${TF}" fill="var(--ink3)">${v}%</text>`)
   const axisY = top + h + 14
   if (days > 1) {
@@ -317,9 +317,9 @@ export function burnUpSvg(x: BurnUpInput): string {
   } else {
     p.push(`<text x="${left}" y="${f(axisY)}" font-size="${TF}" fill="var(--ink3)">${L('开始', 'Start')}</text><text x="${f(left + w)}" y="${f(axisY)}" text-anchor="end" font-size="${TF}" fill="var(--ink3)">${L('重置', 'Reset')}</text>`)
   }
-  // 理想配速对角线
+  // Ideal pace diagonal
   p.push(`<line x1="${f(X(0))}" y1="${f(Y(0))}" x2="${f(X(1))}" y2="${f(Y(1))}" stroke="var(--diag)" stroke-width="1.2" stroke-dasharray="4 4"/>`)
-  // 同一像素列里最多留首尾两个点,坐标留一位小数:点再多,源码长度也有上限
+  // Keep at most first and last points per pixel column, coordinates to one decimal: source length stays bounded however many points
   const poly = (pts: { elapsed: number; used: number }[]) => {
     const kept: { x: number; y: number; col: number }[] = []
     for (const q of pts) {
@@ -331,13 +331,13 @@ export function burnUpSvg(x: BurnUpInput): string {
     return kept.map(k => `${f1(k.x)},${f1(k.y)}`).join(' ')
   }
   const entries = x.overlay.entries
-  // 历史窗口:按新旧递增不透明度;隔着「无数据」的几段直接连起来(采样稀疏时每个点自成一段,
-  // 只画成段的会一条都画不出来),窗口中途重置处仍断开。
-  // 逐条查看时每个窗口一组:一圈看不见的宽感应线(好对准)、原来的线、悬停才出现的标签
+  // Past windows: opacity rises with recency; segments separated by "no data" are joined directly (with sparse sampling each point is its own segment,
+  // so drawing only multi-point segments would draw nothing); still broken at mid-window resets.
+  // With per-line inspection, one group per window: an invisible wide hit line (easy to target), the original line, a hover-only label
   const hover = !!x.interactive
   const history = entries.slice(0, -1)
   const TF2 = 10.5
-  // 标签统一画在最上层(不被后画的线压住),靠序号和自己那组对上
+  // Labels all drawn on the top layer (not covered by later lines), matched to their group by index
   const labels: string[] = []
   let gi = 0
   const tag = (e: OverlayEntry, lp: { elapsed: number; used: number }) => {
@@ -350,7 +350,7 @@ export function burnUpSvg(x: BurnUpInput): string {
     return `w w${gi++}`
   }
   const lastPoint = (runs: { elapsed: number; used: number }[][]) => { const r = runs[runs.length - 1]; return r[r.length - 1] }
-  // 感应线只管好对准(12px 宽),每 4px 留一个整数点就够,源码只多一成左右
+  // Hit lines only need to be easy to target (12px wide); one integer point per 4px is enough, adding only ~10% to source size
   const coarse = (pts: { elapsed: number; used: number }[]) => {
     const out: string[] = []
     let col = NaN
@@ -376,7 +376,7 @@ export function burnUpSvg(x: BurnUpInput): string {
     const gapLines = s.gaps.map(g => `<line class="gp" x1="${f(X(g.from.elapsed))}" y1="${f(Y(g.from.used))}" x2="${f(X(g.to.elapsed))}" y2="${f(Y(g.to.used))}" stroke="var(--id)" stroke-opacity=".3" stroke-width="1.5" stroke-dasharray="2 3"/>`).join('')
     const segs = s.segments.filter(seg => seg.length >= 2).map(seg => ({ seg, pts: poly(seg) }))
     const lines = segs.map(({ pts }) => `<polyline class="ln" points="${pts}" fill="none" stroke="var(--id)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`).join('')
-    // 感应线沿用「接上空隙」的走法:采样稀疏、每段只有一个点时也能指到
+    // Hit lines reuse the "join gaps" path: still targetable when sampling is sparse and each segment has one point
     const joined = joinGaps(s).filter(run => run.length >= 2)
     if (hover && joined.length) p.push(`<g class="${tag(fo, lastPoint(joined))}">${hits(joined)}${gapLines}${lines}</g>`)
     else p.push(gapLines, lines)
@@ -389,7 +389,7 @@ export function burnUpSvg(x: BurnUpInput): string {
     }
   }
   p.push(...labels)
-  // 图例:每项的线型与图里那条线一致
+  // Legend: each item's line style matches its line in the chart
   const items: { mark: string; text: string }[] = []
   const dates = legendDates(x.overlay)
   if (dates) items.push({ mark: `<rect y="2" width="16" height="4" rx="2" fill="url(#${u}r)"/>`, text: `${dates.from} → ${dates.to}` })
@@ -408,7 +408,7 @@ export function burnUpSvg(x: BurnUpInput): string {
     lx += iw + 12
   }
   const H = ly + 5
-  // 逐条查看的样式:悬停的那组加粗、标签出现,其余组变淡;标签不挡鼠标
+  // Per-line inspection styles: hovered group thickens and shows its label, other groups fade; labels don't block the pointer
   const hoverStyle = hover
     ? `<style>#${u}{--tip-bg:rgba(255,255,255,.96);--tip-fg:#1d1d1f;--tip-bd:rgba(0,0,0,.14)}` +
       `@media (prefers-color-scheme: dark){#${u}{--tip-bg:rgba(30,30,32,.94);--tip-fg:#f5f5f7;--tip-bd:rgba(255,255,255,.18)}}` +

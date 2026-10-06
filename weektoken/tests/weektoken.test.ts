@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 const NOW = Date.UTC(2026, 9, 3, 12, 0, 0)
 const iso = (ms: number) => new Date(ms).toISOString()
 
-// 5 小时窗口过了 60%、用了 40%;7 天窗口过了 5/7、用了 64%
+// 5-hour window 60% elapsed, 40% used; 7-day window 5/7 elapsed, 64% used
 const LIMITS = [
   { kind: 'five_hour', percentUsed: 40, resetsAt: iso(NOW + 2 * 3600_000) },
   { kind: 'seven_day', percentUsed: 64, resetsAt: iso(NOW + 2 * 86400_000) },
@@ -11,12 +11,12 @@ const LIMITS = [
 
 const APPLE_ZH = '(\n    "zh-Hans-CN",\n    "en-CN"\n)\n'
 const APPLE_EN = '(\n    "en-US"\n)\n'
-// 本机 claude -p /usage 的输出(节选)
+// Output of local claude -p /usage (excerpt)
 const USAGE_OUT = 'Current session: 3% used · resets Oct 3 at 10:00pm (UTC)\nCurrent week (all models): 64% used · resets Oct 5 at 12:00pm (UTC)\nCurrent week (Fable): 29% used · resets Oct 5 at 12:00pm (UTC)\n'
 
 /**
- * 插件脚下的世界:时钟、存储在内存里;没有 HOME,不读任何本地文件。返回存储,好检查写进去的值。
- * 语言:Claude Code 的 language 设置取 setting(默认设成中文),系统首选语言取 apple。
+ * The world under the plugin: clock and store in memory; no HOME, no local files read. Returns the store so written values can be checked.
+ * Language: the Claude Code language setting comes from setting (defaults to Chinese), system preferred languages from apple.
  */
 function world(on: any, setting = '中文', apple = APPLE_EN, env: Record<string, string> = {}, below?: unknown): Record<string, unknown> {
   const clock = mock.clock(on, { now: NOW })
@@ -25,14 +25,14 @@ function world(on: any, setting = '中文', apple = APPLE_EN, env: Record<string
   const gets: Record<string, number> = {}
   on('store.get', (_$: unknown, e: { key: string }) => { gets[e.key] = (gets[e.key] ?? 0) + 1; return { value: stored[e.key] } })
   on('store.set', (_$: unknown, e: { key: string; value: unknown }) => { stored[e.key] = e.value; return { value: undefined } })
-  // 插件调用的引擎接口:测试以 { value } 应答;session.start 是事件,直接返回结果
+  // Engine APIs the plugin calls: the test answers with { value }; session.start is an event and returns its result directly
   on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: (stored.__limits as unknown[] | undefined) ?? LIMITS } }))
   on('session.start', (_$: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
-  // 没设的环境变量是 undefined(和引擎一样),不是空串
+  // Unset env vars are undefined (same as the engine), not empty strings
   on('env.get', (_$: unknown, e: { name: string }) => ({ value: env[e.name] }))
   on('config.list', () => ({ value: [{ key: 'language', label: 'Language', kind: 'text', value: (stored.__setting as string | undefined) ?? setting, provider: { kind: 'engine' }, isLocked: false }] }))
   on('config.set', (_$: unknown, e: { value: string }) => ({ value: e.value }))
-  // /usage:__usageGate 是个 Promise 时等它再答(看「刷新中」),__usageFail 时失败
+  // /usage: if __usageGate is a Promise, wait for it before answering (to see "refreshing"); fail when __usageFail is set
   on('process.run', async (_$: unknown, e: { argv: string[] }) => {
     if (e.argv[0] === 'defaults') return { value: { exitCode: 0, stdout: apple, stderr: '' } }
     if (e.argv.join(' ').includes('/usage')) {
@@ -45,13 +45,13 @@ function world(on: any, setting = '中文', apple = APPLE_EN, env: Record<string
   const registered: string[] = []
   on('command.register', (_$: unknown, e: { name: string }) => { registered.push(e.name); return { value: { command: e.name } } })
   on('ui.toast', (_$: unknown, e: unknown) => { toasts.push(JSON.stringify(e)); return { value: undefined } })
-  // 记下开着的面板:ui.open 加、ui.close 减,ui.panes 照实回答
+  // Track open panes: ui.open adds, ui.close removes, ui.panes reports them as-is
   const openPanes = new Set<string>()
   on('ui.open', (_$: unknown, e: { id: string }) => { openPanes.add(e.id); return { value: { isPlaced: true } } })
   on('ui.close', (_$: unknown, e: { id: string }) => { openPanes.delete(e.id); return { value: undefined } })
   on('ui.panes', () => ({ value: [...openPanes].map(id => ({ id, title: 'WeekToken', isShown: true, isFocused: false, isPlaced: true })) }))
   stored.__openPanes = openPanes
-  // 原生绘制的替身:插件交回 next(e) 时由它来画
+  // Stand-in for native rendering: draws when the plugin hands back next(e)
   on('ui.render', { component: 'AbovePrompt' }, () => (below ?? { type: 'Box', props: { key: 'native-band' }, children: [] }) as any)
   stored.__toasts = toasts
   stored.__gets = gets
@@ -63,46 +63,46 @@ function world(on: any, setting = '中文', apple = APPLE_EN, env: Record<string
 const BAND = { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 100, scroll: {} }
 
 for (const surface of ['desktop', 'terminal'] as const) {
-  test(`输入框上方的横条在 ${surface} 上画得出来`, async ($, on) => {
+  test(`Band above the prompt renders on ${surface}`, async ($, on) => {
     const stored = world(on)
     await $.session.start({ cwd: '/tmp', surface, isInteractive: true } as any)
     const ui = await $.ui.mount({ plugin: 'weektoken', surface, component: 'AbovePrompt', props: BAND as any })
-    // 默认显示最紧的配额:两个都在第 2 档(不会提前耗尽),按燃烧倍率 7 天 0.90× > 5 小时 0.67×
+    // Tightest quota shown by default: both in tier 2 (no early run-out), ranked by burn rate 7-day 0.90× > 5-hour 0.67×
     const opened = JSON.stringify(await ui.drawn())
     expect(opened).not.toContain('band-open')
     expect(opened).toContain('7 天')
     expect(opened).toContain('已用 64%')
     expect(opened).toContain('已过 71%')
-    // 不写配速状态、不放图钉;进度条只给高度,宽度随横条
+    // No pace status, no pin; progress bar sets only height, width follows the band
     expect(opened).not.toContain('"· 富余"')
     expect(opened).not.toContain('📌')
     expect(opened).toContain('"wrap":"truncate-end"')
     if (surface === 'desktop') expect(opened).toContain('width=\\"100%\\"')
-    // 进度条是普通图片,不是可交互的框:框在面板重画时会被宿主重新装载而闪
+    // Progress bar is a plain image, not an interactive frame: the host remounts frames on pane redraw and they flicker
     if (surface === 'desktop') expect(opened).not.toContain('"isInteractive":true')
     expect(opened).not.toContain('用量落后')
-    // 名字两侧的前后箭头:直接换成另一个配额,并记住
+    // Prev/next arrows beside the name: switch straight to another quota and remember it
     expect(opened).toContain('"key":"band-next"')
     await ui.press({ key: 'band-next' } as any)
     const switched = JSON.stringify(await ui.drawn())
     expect(switched).toContain('5 小时')
     expect(switched).toContain('已用 40%')
     expect(stored.bandKey).toBe('five_hour')
-    // 隐藏先问一句,告诉人从 /weektoken 回来;取消就原样
+    // Hiding asks first and points to /weektoken to bring it back; cancel leaves it as is
     await ui.press({ key: 'band-hide' } as any)
     const ask = JSON.stringify(await ui.drawn())
     expect(ask).toContain('/weektoken')
     expect(stored.band).not.toBe('hidden')
     await ui.press({ key: 'band-hide-no' } as any)
     expect(JSON.stringify(await ui.drawn())).toContain('"key":"band-next"')
-    // 确认才隐藏:交回原生绘制,不占行
+    // Hide only on confirm: hand back to native rendering, taking no rows
     await ui.press({ key: 'band-hide' } as any)
     await ui.press({ key: 'band-hide-yes' } as any)
     expect(JSON.stringify(await ui.drawn())).toContain('native-band')
     expect(stored.band).toBe('hidden')
   })
 
-  test(`配速面板与用量轨迹在 ${surface} 上画得出来`, async ($, on) => {
+  test(`Pace pane and burn-up chart render on ${surface}`, async ($, on) => {
     const stored = world(on)
     await $.session.start({ cwd: '/tmp', surface, isInteractive: true } as any)
     const ui = await $.ui.mount({ plugin: 'weektoken', surface, component: 'Pane', requestId: 'weektoken', props: { bodyColumns: 60 } as any } as any)
@@ -110,37 +110,37 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(pace).toContain('配速')
     expect(pace).toContain('用量落后 12 小时 28 分')
     expect(pace).toContain('隐藏横条')
-    // 不再有阈值说明;标题后不画配额页码点
+    // No threshold legend; no quota page dots after the title
     expect(pace).not.toContain('超速 >')
     expect(pace).not.toContain('━━')
-    // 面板里一个按钮切显示/隐藏,各按一下就切换
+    // One pane button toggles show/hide; each press switches
     await ui.press({ key: 'band-toggle' } as any)
     expect(stored.band).toBe('hidden')
     expect(JSON.stringify(await ui.drawn())).toContain('显示横条')
     await ui.press({ key: 'band-toggle' } as any)
     expect(stored.band).toBe('open')
-    // 两个配额(5 小时、7 天):有切换按钮(桌面端在标题两侧,终端在配速页下方)
+    // Two quotas (5-hour, 7-day): switch buttons present (desktop beside the title, terminal below the pace page)
     expect(pace).toContain('"key":"next"')
     await ui.press({ key: 'tab-burnup' } as any)
     const burn = JSON.stringify(await ui.drawn())
     expect(burn).toContain('用量轨迹')
     if (surface === 'terminal') {
-      // 终端的用量轨迹页用下拉选配额
+      // Terminal burn-up page picks the quota from a dropdown
       expect(burn).toContain('"key":"quota"')
       await ui.select({ key: 'quota', value: 'five_hour' } as any)
       const switched = JSON.stringify(await ui.drawn())
       expect(switched).toContain('5 小时会话额度')
-      // 选项里仍有 7 天,但当前值换成了 5 小时
+      // Options still include 7-day, but the current value is now 5-hour
       expect(switched).toContain('"value":"five_hour"')
     } else {
-      // 桌面端用标题两侧的箭头,用量轨迹页里也在
+      // Desktop uses the arrows beside the title, also on the burn-up page
       await ui.press({ key: 'next' } as any)
       expect(JSON.stringify(await ui.drawn())).toContain('5 小时会话额度')
     }
   })
 }
 
-test('Claude Code 没设语言、系统是英文:界面是英文', async ($, on) => {
+test('Claude Code language unset, system English: UI is English', async ($, on) => {
   world(on, 'Default (English)', APPLE_EN)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
@@ -152,35 +152,35 @@ test('Claude Code 没设语言、系统是英文:界面是英文', async ($, on)
   expect(opened).not.toContain('已用')
 })
 
-test('Claude Code 没设语言、系统是中文:跟系统走中文', async ($, on) => {
+test('Claude Code language unset, system Chinese: UI follows the system in Chinese', async ($, on) => {
   world(on, 'Default (English)', APPLE_ZH)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
   expect(JSON.stringify(await ui.drawn())).toContain('已用 64%')
 })
 
-test('Claude Code 设成别的语言、系统是中文:设置优先,其他语言显示英文', async ($, on) => {
+test('Claude Code set to another language, system Chinese: setting wins and other languages show English', async ($, on) => {
   world(on, 'japanese', APPLE_ZH)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: { bodyColumns: 60 } as any } as any)
   const pane = JSON.stringify(await ui.drawn())
   expect(pane).toContain('Pace')
   expect(pane).toContain('Refresh')
-  // 和「7-day · Fable」一样首字母大写
+  // Capitalized like "7-day · Fable"
   expect(pane).toContain('7-day · All models')
 })
 
-test('环境变量 WEEKTOKEN_LANG=zh 压过 Claude Code 的英文设置', async ($, on) => {
+test('WEEKTOKEN_LANG=zh env var overrides the English Claude Code setting', async ($, on) => {
   world(on, 'English', APPLE_EN, { WEEKTOKEN_LANG: 'zh' })
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
   expect(JSON.stringify(await ui.drawn())).toContain('已用 64%')
 })
 
-test('点刷新会跑 /usage,补上 Fable 这类分模型配额', async ($, on) => {
+test('Refresh runs /usage and adds per-model quotas such as Fable', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
-  // 终端:用量轨迹页的下拉里多出 Fable,选项是短名
+  // Terminal: burn-up dropdown gains Fable, options use short names
   const term = await $.ui.mount({ plugin: 'weektoken', surface: 'terminal', component: 'Pane', requestId: 'weektoken', props: { bodyColumns: 60 } as any } as any)
   expect(JSON.stringify(await term.drawn())).not.toContain('Fable')
   await term.press({ key: 'refresh' } as any)
@@ -190,14 +190,14 @@ test('点刷新会跑 /usage,补上 Fable 这类分模型配额', async ($, on) 
   expect(burn).toContain('"label":"全部模型"')
   expect(burn).toContain('"label":"5 小时"')
   expect(burn).toContain('↻ 刷新')
-  // 桌面:标题两侧的箭头能翻到 Fable
+  // Desktop: arrows beside the title can reach Fable
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: { bodyColumns: 60 } as any } as any)
   let seen = false
   for (let i = 0; i < 3 && !seen; i++) { await ui.press({ key: 'next' } as any); seen = JSON.stringify(await ui.drawn()).includes('Fable') }
   expect(seen).toBe(true)
 })
 
-test('旧版钉住的配额沿用为横条显示的配额,旧的「收起」当作显示', async ($, on) => {
+test('Legacy pinned quota carries over as the band quota, and legacy "collapsed" is treated as shown', async ($, on) => {
   const stored = world(on)
   stored.view = { key: null, pinned: 'five_hour' }
   stored.band = 'mini'
@@ -208,7 +208,7 @@ test('旧版钉住的配额沿用为横条显示的配额,旧的「收起」当�
   expect(band).toContain('已用 40%')
 })
 
-test('装好后第一次会话说一声入口在哪,之后不再说', async ($, on) => {
+test('First session after install announces the entry point once, then never again', async ($, on) => {
   const stored = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const toasts = stored.__toasts as string[]
@@ -218,7 +218,7 @@ test('装好后第一次会话说一声入口在哪,之后不再说', async ($, 
   expect(toasts.filter(t => t.includes('/weektoken')).length).toBe(1)
 })
 
-test('面板底部有作者署名', async ($, on) => {
+test('Pane footer shows the author credit', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: { bodyColumns: 60 } as any } as any)
@@ -227,60 +227,60 @@ test('面板底部有作者署名', async ($, on) => {
   expect(pane).not.toContain('"type":"Link"')
 })
 
-test('新采样没改变横条显示的数字时,横条画的内容不变;数字变了才变', async ($, on) => {
+test('Band output is unchanged when a new sample leaves its displayed numbers the same, and changes only when they change', async ($, on) => {
   world(on)
   on('session.measure', (_$: unknown, e: { changed: unknown }) => ({ changed: e.changed }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
-  // 按钮的句柄每次绘制都会换,比较前去掉
+  // Button handles change on every draw; strip them before comparing
   const drawn = async () => JSON.stringify(await ui.drawn()).replace(/"handle":\d+/g, '')
   const before = await drawn()
-  // 7 天 64.2%:取整后仍是 64%,横条不该变
+  // 7-day 64.2%: still 64% after rounding, band must not change
   await $.session.measure({ context: { window: 200000 }, rateLimits: [LIMITS[0], { ...LIMITS[1], percentUsed: 64.2 }], changed: ['rateLimits'] } as any)
   expect(await drawn()).toBe(before)
-  // 66%:变了
+  // 66%: changed
   await $.session.measure({ context: { window: 200000 }, rateLimits: [LIMITS[0], { ...LIMITS[1], percentUsed: 66 }], changed: ['rateLimits'] } as any)
   expect(await drawn()).toContain('已用 66%')
 })
 
-test('「上次使用」看本机的回复:一直在回复就不提示;Fable 只看 Fable 模型的回复', async ($, on) => {
+test('"Last used" follows local replies: no hint while replies keep coming; Fable counts only Fable model replies', async ($, on) => {
   const stored = world(on)
   const clock = stored.__clock as { advance: (ms: number) => Promise<void> }
   on('turn.complete', () => ({ text: '' }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: { bodyColumns: 60 } as any } as any)
-  await ui.press({ key: 'refresh' } as any) // 补上 Fable
+  await ui.press({ key: 'refresh' } as any) // adds Fable
   const turn = (model: string) => $.turn.complete({ answer: 'ok', durationMs: 1000, isAborted: false, turnId: 't', reason: 'answer', usage: { model, input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as any)
-  // 40 分钟里一直在用 Opus,7 天的百分比一点没涨:不该说「上次使用」
+  // Opus in use for 40 minutes while the 7-day percent did not move: no "last used"
   for (let i = 0; i < 4; i++) { await clock.advance(10 * 60_000); await turn('claude-opus-5-5') }
   expect(JSON.stringify(await ui.drawn())).not.toContain('上次使用')
-  // 停 40 分钟:说 40 分前
+  // Idle 40 minutes: says 40 minutes ago
   await clock.advance(40 * 60_000)
   await ui.press({ key: 'tab-pace' } as any)
   expect(JSON.stringify(await ui.drawn())).toContain('上次使用：40 分前')
-  // 切到 Fable:这段时间只用了 Opus,从刷新拿到 Fable 起就没用过
-  // 用标题两侧的箭头翻到 Fable
+  // Switch to Fable: only Opus was used, so Fable is unused since refresh fetched it
+  // Use the arrows beside the title to reach Fable
   for (let i = 0; i < 3 && (stored.view as { key?: string } | undefined)?.key !== 'weekly_fable'; i++) await ui.press({ key: 'next' } as any)
   expect((stored.view as { key: string }).key).toBe('weekly_fable')
   expect(JSON.stringify(await ui.drawn())).toContain('至少 1 小时 20 分没用过 Fable')
 })
 
-test('几个会话同时开着:写采样前先并上别的会话刚写的,不把它冲掉', async ($, on) => {
+test('With several sessions open, writing samples first merges what others just wrote instead of overwriting it', async ($, on) => {
   const stored = world(on)
   on('session.measure', (_$: unknown, e: { changed: unknown }) => ({ changed: e.changed }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
-  // 另一个会话这时写进一条更晚的采样
+  // Another session writes a later sample meanwhile
   const other = { t: NOW + 30 * 60_000, w: { five_hour: { u: 41, r: NOW + 2 * 3600_000 } } }
   stored.samples = [...(stored.samples as unknown[]), other]
-  // 本会话又记一条
+  // This session records one more
   await $.session.measure({ context: { window: 200000 }, rateLimits: [{ ...LIMITS[0], percentUsed: 45 }, LIMITS[1]], changed: ['rateLimits'] } as any)
   const ts = (stored.samples as { t: number }[]).map(x => x.t)
   expect(ts).toContain(other.t)
   expect((stored.samples as { w: Record<string, { u: number }> }[]).some(x => x.w.five_hour?.u === 45)).toBe(true)
 })
 
-test('横条画完自己,把别的 mod 的横条接在下面', async ($, on) => {
-  // 排在后面的(别的 mod / 引擎)画了一行
+test('Band draws itself and then appends the bands of other mods below', async ($, on) => {
+  // Next in line (another mod / the engine) draws one row
   world(on, '中文', APPLE_EN, {}, { type: 'Box', props: { key: 'other-mod' }, children: [{ type: 'Text', props: {}, children: ['other band'] }] })
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
@@ -289,7 +289,7 @@ test('横条画完自己,把别的 mod 的横条接在下面', async ($, on) => 
   expect(band).toContain('other band')
 })
 
-test('/weektoken hide 和 show 直接隐藏、显示横条;不认识的参数给提示', async ($, on) => {
+test('/weektoken hide and show hide or show the band directly; unknown arguments get a hint', async ($, on) => {
   const stored = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
@@ -303,7 +303,7 @@ test('/weektoken hide 和 show 直接隐藏、显示横条;不认识的参数给
   expect(JSON.stringify(await $.command.run({ command: 'weektoken', args: 'foo' } as any))).toContain('show')
 })
 
-test('CLAUDE_MODS_DISABLE=weektoken:什么都不画,也不注册命令', async ($, on) => {
+test('CLAUDE_MODS_DISABLE=weektoken: draws nothing and registers no command', async ($, on) => {
   const stored = world(on, '中文', APPLE_EN, { CLAUDE_MODS_DISABLE: 'other, weektoken' })
   const registered = stored.__registered as string[]
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
@@ -314,14 +314,14 @@ test('CLAUDE_MODS_DISABLE=weektoken:什么都不画,也不注册命令', async (
 
 const PANE_PROPS = { bodyColumns: 60, isFocused: false, scroll: { offset: 0, bodyRows: 30 } }
 
-test('刷新:进行中按钮写「刷新中…」,完成后复原;底部那行不插「已更新」;/usage 失败才提示', async ($, on) => {
+test('Refresh: button reads "refreshing…" while running and resets after; no "updated" in the footer; toast only when /usage fails', async ($, on) => {
   const stored = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
   let open!: () => void
   stored.__usageGate = new Promise<void>(r => { open = r })
   const pressing = ui.press({ key: 'refresh' } as any)
-  // 还在跑 /usage:按钮显示进行中,再点也不会再起一次
+  // /usage still running: button shows in progress, pressing again starts no second run
   for (let i = 0; i < 20 && !JSON.stringify(await ui.drawn()).includes('刷新中'); i++) await (stored.__clock as { advance: (ms: number) => Promise<void> }).advance(1)
   expect(JSON.stringify(await ui.drawn())).toContain('↻ 刷新中…')
   open()
@@ -332,14 +332,14 @@ test('刷新:进行中按钮写「刷新中…」,完成后复原;底部那行�
   expect(after).not.toContain('已更新')
   expect(after).not.toContain('已是最新')
   expect((stored.__toasts as string[]).join('\n')).not.toContain('/usage')
-  // /usage 跑不出来:弹一句
+  // /usage fails: show a toast
   stored.__usageGate = undefined
   stored.__usageFail = true
   await ui.press({ key: 'refresh' } as any)
   expect((stored.__toasts as string[]).join('\n')).toContain('/usage')
 })
 
-test('新会话还没回复过(没有实时限额):点刷新用 /usage 补上 5 小时和 7 天', async ($, on) => {
+test('New session with no replies yet (no live limits): refresh fills in 5-hour and 7-day via /usage', async ($, on) => {
   const stored = world(on)
   stored.__limits = []
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
@@ -350,7 +350,7 @@ test('新会话还没回复过(没有实时限额):点刷新用 /usage 补上 5 
   expect([...keys].sort()).toEqual(['five_hour', 'seven_day', 'weekly_fable'])
 })
 
-test('窗口已过重置时刻:横条写「已重置」,不再显示上一个窗口的用量', async ($, on) => {
+test('Window past its reset time: band says "reset" and stops showing the previous window usage', async ($, on) => {
   const stored = world(on)
   stored.__limits = [{ kind: 'seven_day', percentUsed: 64, resetsAt: iso(NOW - 60_000) }]
   stored.bandKey = 'seven_day'
@@ -361,7 +361,7 @@ test('窗口已过重置时刻:横条写「已重置」,不再显示上一个窗
   expect(band).not.toContain('已用 64%')
 })
 
-test('终端变窄(面板停靠在旁边)时横条不折行:先去掉「已过」,再去掉进度条', async ($, on) => {
+test('Band does not wrap when the terminal narrows (pane docked beside it): drops "elapsed" first, then the progress bar', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true } as any)
   const at = async (cols: number) => {
@@ -379,20 +379,20 @@ test('终端变窄(面板停靠在旁边)时横条不折行:先去掉「已过�
   expect(narrow).not.toContain('░')
 })
 
-test('改了 Claude Code 的语言:横条换语言,命令说明也重新注册', async ($, on) => {
+test('Changing the Claude Code language switches the band language and re-registers the command description', async ($, on) => {
   const stored = world(on, '中文', APPLE_EN)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
   expect(JSON.stringify(await ui.drawn())).toContain('已用 64%')
   stored.__setting = 'English'
   await $.config.set({ key: 'language', value: 'English' } as any)
-  // 设置原样交给引擎,稍后再探测语言
+  // Setting passes through to the engine; language is re-detected shortly after
   await (stored.__clock as { advance: (ms: number) => Promise<void> }).advance(400)
   expect(JSON.stringify(await ui.drawn())).toContain('64% used')
   expect((stored.__registered as string[]).filter(n => n === 'weektoken').length).toBe(2)
 })
 
-test('每分钟并进别的会话的采样:存储的版本号没变就不读整份采样', async ($, on) => {
+test('Per-minute merge of samples from other sessions skips the full read when the stored revision is unchanged', async ($, on) => {
   const stored = world(on)
   const clock = stored.__clock as { advance: (ms: number) => Promise<void> }
   const gets = stored.__gets as Record<string, number>
@@ -401,7 +401,7 @@ test('每分钟并进别的会话的采样:存储的版本号没变就不读整�
   const before = gets.samples ?? 0
   await clock.advance(3 * 60_000)
   expect(gets.samples ?? 0).toBe(before)
-  // 别的会话写了:版本号变了,下一分钟读进来
+  // Another session wrote: revision changed, read in on the next minute
   const other = { t: NOW + 30 * 60_000, w: { five_hour: { u: 41, r: NOW + 2 * 3600_000 } } }
   stored.samples = [...(stored.samples as unknown[]), other]
   stored.samplesRev = 'other-session'
@@ -409,29 +409,29 @@ test('每分钟并进别的会话的采样:存储的版本号没变就不读整�
   expect(gets.samples).toBe(before + 1)
 })
 
-test('横条和面板看同一个配额:任何一处切换,两边一起换', async ($, on) => {
+test('Band and pane always show the same quota: switching in either switches both', async ($, on) => {
   const stored = world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const band = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
   const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
-  // 都没选过:两边都显示最紧的 7 天
+  // Nothing chosen yet: both show the tightest quota, 7-day
   expect(JSON.stringify(await band.drawn())).toContain('已用 64%')
   expect(JSON.stringify(await pane.drawn())).toContain('7 天 · 全部模型')
-  // 横条上换到 5 小时:面板跟着换
+  // Switch to 5-hour on the band: pane follows
   await band.press({ key: 'band-next' } as any)
   expect(JSON.stringify(await pane.drawn())).toContain('5 小时会话额度')
-  // 面板里换回 7 天:横条跟着换,两边都记住
+  // Switch back to 7-day in the pane: band follows, both remember
   await pane.press({ key: 'prev' } as any)
   expect(JSON.stringify(await band.drawn())).toContain('已用 64%')
   expect(stored.bandKey).toBe('seven_day')
   expect((stored.view as { key: string }).key).toBe('seven_day')
-  // 用量轨迹页里的箭头也一样
+  // Same for the arrows on the burn-up page
   await pane.press({ key: 'tab-burnup' } as any)
   await pane.press({ key: 'next' } as any)
   expect(JSON.stringify(await band.drawn())).toContain('已用 40%')
 })
 
-test('横条上名字那一格宽度固定:切换配额时两侧箭头不挪', async ($, on) => {
+test('Band name cell has a fixed width so the arrows stay put when switching quotas', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const band = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
@@ -446,7 +446,7 @@ test('横条上名字那一格宽度固定:切换配额时两侧箭头不挪', a
   expect(await nameBox()).toBe(before)
 })
 
-test('横条上的「详情」再按一下收起面板,按钮写「收起」', async ($, on) => {
+test('Band "details" button closes the pane on a second press and reads "collapse" while open', async ($, on) => {
   const stored = world(on)
   const open = stored.__openPanes as Set<string>
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
@@ -460,7 +460,7 @@ test('横条上的「详情」再按一下收起面板,按钮写「收起」', a
   expect(JSON.stringify(await band.drawn())).toContain('"label":"详情"')
 })
 
-test('桌面端横条:同一宽度下所有配额对「已过」的取舍一致,放不下就整段不显示', async ($, on) => {
+test('Desktop band: at a given width all quotas agree on showing "elapsed", dropping the whole segment when it does not fit', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const at = async (cols: number) => {
@@ -469,16 +469,16 @@ test('桌面端横条:同一宽度下所有配额对「已过」的取舍一致,
     await band.press({ key: 'band-next' } as any)
     const five = JSON.stringify(await band.drawn())
     await band.press({ key: 'band-prev' } as any)
-    // 只看横条上那段字(进度条图片的替代文字里也有「已过」)
+    // Check only the band text (the progress bar image alt text also contains "elapsed")
     return [seven.includes('"· 已过 '), five.includes('"· 已过 ')]
   }
   expect(await at(100)).toEqual([true, true])
   expect(await at(54)).toEqual([false, false])
 })
 
-test('用量轨迹「近一月」平时是普通图片,点「逐条查看」才换成可悬停的框;换范围就退出', async ($, on) => {
+test('Burn-up "past month" is a plain image until "explore" swaps in a hoverable frame; changing range exits it', async ($, on) => {
   const stored = world(on)
-  // 上一个 7 天窗口(已结束)两条采样,峰值 30%;当前窗口一条
+  // Previous 7-day window (ended) has two samples peaking at 30%; current window has one
   const prevReset = NOW + 2 * 86400_000 - 7 * 86400_000
   const curReset = NOW + 2 * 86400_000
   stored.samples = [
@@ -489,7 +489,7 @@ test('用量轨迹「近一月」平时是普通图片,点「逐条查看」才�
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
   await pane.press({ key: 'tab-burnup' } as any)
-  // 「本窗口」没有逐条查看
+  // "This window" has no explore
   expect(JSON.stringify(await pane.drawn())).not.toContain('"key":"explore"')
   await pane.press({ key: 'range-month' } as any)
   const still = JSON.stringify(await pane.drawn())
@@ -505,22 +505,22 @@ test('用量轨迹「近一月」平时是普通图片,点「逐条查看」才�
   expect(live).toContain('峰值 30%')
   expect(live).toContain('✓ 完成')
   expect(live).not.toContain('"display":"none"')
-  // 再按一下退出
+  // Press again to exit
   await pane.press({ key: 'explore' } as any)
   expect(JSON.stringify(await pane.drawn())).not.toContain('"isInteractive":true')
-  // 换范围自动退出
+  // Changing range exits automatically
   await pane.press({ key: 'explore' } as any)
   await pane.press({ key: 'range-all' } as any)
   expect(JSON.stringify(await pane.drawn())).not.toContain('"isInteractive":true')
 })
 
-test('配速页:三个读数画进圆环图里;没超速画同色余量斜线,超速段同色深一档加斜线;不再有光晕', async ($, on) => {
+test('Pace page: three readings drawn inside the ring; under pace gets same-hue headroom hatching, over pace a one-step darker hatched segment; no glow', async ($, on) => {
   const stored = world(on)
   on('session.measure', (_$: unknown, e: { changed: unknown }) => ({ changed: e.changed }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
   const under = JSON.stringify(await pane.drawn())
-  // 读数在图里(小号标签在上、数字在下),原生文字那一行没了
+  // Readings are inside the chart (small label above, number below); the native text row is gone
   expect(under).toContain('>已用</text>')
   expect(under).toContain('>距重置</text>')
   expect(under).not.toContain('"已过"')
@@ -528,7 +528,7 @@ test('配速页:三个读数画进圆环图里;没超速画同色余量斜线,�
   expect(under).not.toContain('<animate')
   expect(under).toMatch(/stroke=\\"url\(#wtr[0-9a-z]+m\)\\"/)
   expect(under).not.toMatch(/url\(#wtr[0-9a-z]+x\)/)
-  // 7 天用了 90%、时间才过 71%:超出的一段画成深色斜线
+  // 7-day at 90% used with only 71% elapsed: the excess is drawn as dark hatching
   stored.__limits = [{ kind: 'seven_day', percentUsed: 90, resetsAt: iso(NOW + 2 * 86400_000) }]
   await $.session.measure({ context: { window: 200000 }, rateLimits: stored.__limits, changed: ['rateLimits'] } as any)
   const over = JSON.stringify(await pane.drawn())
@@ -536,7 +536,7 @@ test('配速页:三个读数画进圆环图里;没超速画同色余量斜线,�
   expect(over).toContain('>90%</text>')
 })
 
-test('桌面端面板:切换箭头在标题两侧(同横条),名字那格宽度固定;圆环那一行只放图', async ($, on) => {
+test('Desktop pane: switch arrows beside the title (like the band), fixed-width name cell; ring row holds only the chart', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
@@ -546,7 +546,7 @@ test('桌面端面板:切换箭头在标题两侧(同横条),名字那格宽度�
   expect(json).toContain('"key":"prev"')
   expect(json).toContain('"key":"next"')
   expect(json).toContain('7 天 · 全部模型')
-  // 名字那格的宽度按最长的配额名定,切换后不变
+  // Name cell width comes from the longest quota name and stays the same after switching
   const width = (h: any) => h.children.find((c: any) => c.type === 'Box' && typeof c.props?.width === 'number')?.props.width
   const w0 = width(header)
   expect(w0).toBeGreaterThan(0)
@@ -554,14 +554,14 @@ test('桌面端面板:切换箭头在标题两侧(同横条),名字那格宽度�
   const after = (await pane.drawn() as any).children[0]
   expect(JSON.stringify(after)).toContain('5 小时')
   expect(width(after)).toBe(w0)
-  // 圆环那一行不再夹着按钮;用量轨迹页也不再另放配额下拉
+  // Ring row no longer has buttons around it; burn-up page has no separate quota dropdown
   const all = JSON.stringify(await pane.drawn())
   expect(all.match(/"key":"prev"/g)?.length).toBe(1)
   await pane.press({ key: 'tab-burnup' } as any)
   expect(JSON.stringify(await pane.drawn())).not.toContain('"key":"quota"')
 })
 
-test('面板右下角署名后面跟版本号(取自自己的 plugin.json)', async ($, on) => {
+test('Pane bottom-right credit is followed by the version (from its own plugin.json)', async ($, on) => {
   world(on)
   on('fs.read', (_$: unknown, e: { path: string }) => ({ value: e.path.endsWith('/.claude-plugin/plugin.json') ? JSON.stringify({ name: 'weektoken', version: '9.8.7' }) : '' }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
@@ -571,13 +571,13 @@ test('面板右下角署名后面跟版本号(取自自己的 plugin.json)', asy
   expect(JSON.stringify(await term.drawn())).toContain('@mj0011sec · v9.8.7')
 })
 
-test('桌面端面板上下层之间空两行(标题、标签、圆环、文字、底部按钮);终端仍空一行', async ($, on) => {
+test('Desktop pane leaves two blank rows between layers (title, tabs, ring, text, footer buttons); terminal still leaves one', async ($, on) => {
   world(on)
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
   const root = await pane.drawn() as any
   expect(root.props.gap).toBe(2)
-  // 配速页里圆环和下面的文字之间
+  // Between the ring and the text below it on the pace page
   const pace = root.children.find((c: any) => c.props?.alignItems === 'center' && c.props?.flexDirection === 'column')
   expect(pace.props.gap).toBe(2)
   const term = await $.ui.mount({ plugin: 'weektoken', surface: 'terminal', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
