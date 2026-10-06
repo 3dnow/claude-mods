@@ -90,6 +90,7 @@ Every command is fixed text, and none goes through a shell.
 
 - `~/.claude.json`, Claude Code's own file. Only its `cachedUsageUtilization` entry is used: Claude Code's usage cache, which includes per-model quotas. The file also holds account details; those are not used or kept. It is read at session start, every 5 minutes when the file has changed, and on Refresh.
 - `~/.weektoken/samples.jsonl`, or the file named by `WEEKTOKEN_HISTORY`, if it exists.
+- Its own `plugin.json`, at session start, for the version shown after the author credit in the pane.
 - Environment variables: `HOME` and `PATH` (to find the files and `claude` above), `LANG`, `LC_ALL` and `LC_MESSAGES` (the language), `WEEKTOKEN_LANG`, `WEEKTOKEN_HISTORY` and `CLAUDE_MODS_DISABLE`. It reads no credentials.
 - From Claude Code: the session's rate-limit figures, the time and model of each reply, and the `language` setting.
 

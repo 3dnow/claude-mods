@@ -58,6 +58,8 @@ declare module 'claude-code' {
       paneOpen: boolean
       lang: Lang
       activity: Activity
+      /** 载入的版本号(取自自己的 plugin.json),画在面板署名后面 */
+      version: string
     }
   }
 }

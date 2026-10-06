@@ -30,6 +30,8 @@ const bandShowA = atom({ plugin: 'weektoken', key: 'bandShow' } as const, null a
 const activityA = atom({ plugin: 'weektoken', key: 'activity' } as const, { byModel: {} } as Activity)
 // 面板开着没有:横条上的按钮据此写「收起」或「详情」
 const paneOpenA = atom({ plugin: 'weektoken', key: 'paneOpen' } as const, false)
+/** 载入的是哪一版:会话开始时从自己的 plugin.json 读,画在署名后面 */
+const versionA = atom({ plugin: 'weektoken', key: 'version' } as const, '')
 const AUTHOR = { x: 'mj0011sec' }
 
 // CLAUDE_MODS_DISABLE=all,或逗号列表里有 weektoken:所有钩子放行,也不注册命令
@@ -865,9 +867,12 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
 }
 
 /** 署名:面板最底下右下角,推特账号,一行 10px 的半透明小字(画成图;不需要点) */
+// 面板绘制时读到的版本号(读 versionA 也让面板在它写入后重画)
+let paneVersion = ''
+
 function credit($: any, e: any) {
   const { Box, Text } = $.ui.resolve(e)
-  const handle = `@${AUTHOR.x}`
+  const handle = `@${AUTHOR.x}${paneVersion ? ` · v${paneVersion}` : ''}`
   return (
     <Box flexDirection="row" justifyContent="flex-end">
       {e.surface === 'terminal' ? <Text dimColor>{handle}</Text> : pic($, e, creditSvg(handle), handle)}
@@ -969,6 +974,10 @@ let timers: { cancel: () => void }[] = []
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     if (await readDisabled($)) return next(e)
+    try {
+      const manifest = JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: unknown }
+      if (typeof manifest.version === 'string') await update($, versionA, () => manifest.version as string)
+    } catch {}
     try { await refreshLang($) } catch {}
     await $.command.register(commandSpec())
     // 重载前留下的「刷新中」「确认隐藏」不会再有人收尾
@@ -1092,6 +1101,7 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const activity = (await read($, activityA)) ?? { byModel: {} }
     const bandKey = (await read($, bandKeyA)) ?? null
+    paneVersion = (await read($, versionA)) ?? ''
     return drawPane($, e, samples, activity, view, note, band, buildModel(samples, view, now, bandKey), now)
   })
 }

@@ -560,3 +560,13 @@ test('桌面端面板:切换箭头在标题两侧(同横条),名字那格宽度�
   await pane.press({ key: 'tab-burnup' } as any)
   expect(JSON.stringify(await pane.drawn())).not.toContain('"key":"quota"')
 })
+
+test('面板右下角署名后面跟版本号(取自自己的 plugin.json)', async ($, on) => {
+  world(on)
+  on('fs.read', (_$: unknown, e: { path: string }) => ({ value: e.path.endsWith('/.claude-plugin/plugin.json') ? JSON.stringify({ name: 'weektoken', version: '9.8.7' }) : '' }))
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  expect(JSON.stringify(await pane.drawn())).toContain('@mj0011sec · v9.8.7')
+  const term = await $.ui.mount({ plugin: 'weektoken', surface: 'terminal', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  expect(JSON.stringify(await term.drawn())).toContain('@mj0011sec · v9.8.7')
+})
