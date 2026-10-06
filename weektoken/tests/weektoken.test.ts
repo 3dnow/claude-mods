@@ -36,6 +36,7 @@ function world(on: any, setting = '中文', apple = APPLE_EN, env: Record<string
   on('process.run', async (_$: unknown, e: { argv: string[] }) => {
     if (e.argv[0] === 'defaults') return { value: { exitCode: 0, stdout: apple, stderr: '' } }
     if (e.argv.join(' ').includes('/usage')) {
+      stored.__claudeRuns = ((stored.__claudeRuns as number | undefined) ?? 0) + 1
       await (stored.__usageGate as Promise<void> | undefined)
       return { value: stored.__usageFail ? { exitCode: 1, stdout: '', stderr: 'boom' } : { exitCode: 0, stdout: (stored.__usageOut as string | undefined) ?? USAGE_OUT, stderr: '' } }
     }
@@ -582,4 +583,42 @@ test('Desktop pane leaves two blank rows between layers (title, tabs, ring, text
   expect(pace.props.gap).toBe(2)
   const term = await $.ui.mount({ plugin: 'weektoken', surface: 'terminal', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
   expect((await term.drawn() as any).props.gap).toBe(1)
+})
+
+const API_USAGE = {
+  five_hour: { utilization: 41, resets_at: new Date(NOW + 2 * 3600_000).toISOString() },
+  seven_day: { utilization: 65, resets_at: new Date(NOW + 2 * 86400_000).toISOString() },
+  limits: [
+    { kind: 'session', percent: 41, resets_at: new Date(NOW + 2 * 3600_000).toISOString() },
+    { kind: 'weekly_all', percent: 65, resets_at: new Date(NOW + 2 * 86400_000).toISOString() },
+    { kind: 'weekly_scoped', percent: 33, resets_at: new Date(NOW + 2 * 86400_000).toISOString(), scope: { model: { display_name: 'Fable' } } },
+  ],
+}
+
+test('Refresh reads usage from the usage endpoint through the session login, without starting claude', async ($, on) => {
+  const stored = world(on)
+  const fetched: { url: string; auth?: string }[] = []
+  on('session.authorize', () => ({ value: { handle: 'h1', kind: 'bearer' } }))
+  on('http.fetch', (_$: unknown, e: { url: string; init?: { auth?: string } }) => {
+    fetched.push({ url: e.url, auth: e.init?.auth })
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(API_USAGE) } }
+  })
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  await pane.press({ key: 'refresh' } as any)
+  expect(fetched).toEqual([{ url: 'https://api.anthropic.com/api/oauth/usage', auth: 'h1' }])
+  expect(stored.__claudeRuns ?? 0).toBe(0)
+  const fable = (stored.samples as { w: Record<string, { u: number }> }[]).find(s => s.w.weekly_fable)
+  expect(fable?.w.weekly_fable.u).toBe(33)
+})
+
+test('Refresh falls back to claude /usage when the usage endpoint fails', async ($, on) => {
+  const stored = world(on)
+  on('session.authorize', () => ({ value: { handle: 'h1', kind: 'bearer' } }))
+  on('http.fetch', () => ({ value: { status: 500, ok: false, headers: {}, text: 'oops' } }))
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  await pane.press({ key: 'refresh' } as any)
+  expect(stored.__claudeRuns).toBe(1)
+  expect((stored.samples as { w: Record<string, unknown> }[]).some(s => s.w.weekly_fable)).toBe(true)
 })

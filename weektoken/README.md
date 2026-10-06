@@ -32,7 +32,7 @@ In the terminal, the band sits above the prompt and `/weektoken` docks beside th
 - The arrows on either side of the pane's title switch between the 5-hour window, the 7-day window and per-model quotas such as Fable, on both tabs. As in the band, the name sits in a fixed-width slot, so the arrows stay put.
 - Narration and forecast, e.g. "Usage 12h 28m behind the clock", "At this rate, runs out ~Sat 20:12"; an extra line when you have been speeding up or slowing down lately.
 - Burn-up chart: this window, the last month or everything, with older windows a step away; an even-pace line, the projection at the recent rate, when you would run out, and stretches without data, with the legend drawn inside the chart. When a range holds more than 60 windows, 60 evenly spaced ones are drawn and the caption says so. In Last month and All, the chart stays a plain image; point at it and **⤢ Inspect lines** appears at its top-left. Press it and the chart becomes hoverable: point at a line to see its dates and peak, with that line bold and the others faded. **✓ Done**, or changing the range, quota or tab, turns it back into an image (a plain image never flashes when the band redraws; the hoverable chart can). When the hoverable chart would be too large to draw for a range, the button does not appear.
-- Footer: "Last used Fable 3h ago" when a quota has not moved for half an hour, **⊖ Hide band / ⊕ Show band** and **↻ Refresh**. While refreshing, the button reads **Refreshing…**; a notice appears only if `/usage` could not run.
+- Footer: "Last used Fable 3h ago" when a quota has not moved for half an hour, **⊖ Hide band / ⊕ Show band** and **↻ Refresh**. A refresh takes about half a second; while it runs, the button reads **Refreshing…**, and a notice appears only if fresh figures could not be fetched.
 
 **Colors follow pace, not the raw percentage:** the over-pace thresholds are Claude Code's own rate-limit warning calibration (`five_hour`: 0.9/0.72; `seven_day`: 0.25/0.15, 0.5/0.35, 0.75/0.6) and tighten as the window goes on.
 
@@ -42,7 +42,7 @@ In the terminal, the band sits above the prompt and `/weektoken` docks beside th
 |---|---|
 | The session's own rate limits | The 5-hour and 7-day windows, updated after every reply |
 | `cachedUsageUtilization` in `~/.claude.json` | Claude Code's own usage cache, including per-model quotas (Fable and others) |
-| Local `claude -p --no-session-persistence /usage` (only when you press **↻ Refresh**) | Fresh per-model quotas; also the 5-hour and 7-day windows when there is no local reading from the last 10 minutes (a new session before its first reply) |
+| Anthropic's usage endpoint, through Claude Code (only when you press **↻ Refresh**); local `claude -p --no-session-persistence /usage` if that isn't available | Fresh per-model quotas; also the 5-hour and 7-day windows when there is no local reading from the last 10 minutes (a new session before its first reply) |
 | `~/.weektoken/samples.jsonl` (optional) | History from the WeekToken macOS app, imported read-only |
 
 Samples are kept in the mod's own cross-session store, up to 8000; the oldest go first. Sessions open at the same time merge their samples and keep one copy of each reading. Without history to import from the WeekToken macOS app, history starts when you install the mod, since the API only reports current values.
@@ -73,7 +73,9 @@ Mods run with the same access as Claude Code itself and are not sandboxed. This 
 
 ### What it sends, and where
 
-WeekToken itself makes no network calls, and nothing it reads is sent anywhere. The only request that leaves your machine is made by Claude Code, not by the mod: when you press **↻ Refresh**, the mod runs Claude Code's own `/usage` command (below), and Claude Code looks up your usage at Anthropic's usage endpoint (`/api/oauth/usage`) with the login it already has. No model is called and no quota is used; checked with `claude --debug-file`.
+Nothing WeekToken reads is sent anywhere. It makes one kind of request, only when you press **↻ Refresh**: a `GET` to Anthropic's usage endpoint (`https://api.anthropic.com/api/oauth/usage`), the same one Claude Code's own `/usage` reads. The request goes through Claude Code, which adds the login it already has; the mod never sees the credential, only an opaque handle that Claude Code honors for Anthropic's own hosts alone. No body is sent, no model is called and no quota is used.
+
+Without a subscription login (an API key, another provider), or if that request fails, Refresh runs Claude Code's `/usage` command instead (below), and Claude Code makes the same request itself.
 
 ### Programs it runs, and why
 
@@ -81,7 +83,7 @@ Every command is fixed text, and none goes through a shell.
 
 | Command | When | Why |
 | --- | --- | --- |
-| `claude -p --no-session-persistence /usage` | Only when you press **↻ Refresh** | The only fresh source for per-model quotas such as Fable. The mod looks for `claude` on your `PATH`, then in `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin` and `/usr/local/bin`. It saves no session. |
+| `claude -p --no-session-persistence /usage` | Only when you press **↻ Refresh** and the usage endpoint above can't be used | A fallback source for per-model quotas such as Fable. The mod looks for `claude` on your `PATH`, then in `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin` and `/usr/local/bin`. It saves no session. |
 | `defaults read -g AppleLanguages` | At session start, and when you change Claude Code's language | Reads the macOS language when Claude Code's own language setting is not set (macOS only). |
 | `tail -n 8000 ~/.weektoken/samples.jsonl` | At session start and every 10 minutes, only if the file exists | Imports history from the WeekToken macOS app. |
 | `perl`, with one fixed pattern and no shell | Only when `~/.claude.json` is over 4 MiB and can't be read directly | Extracts just the `cachedUsageUtilization` entry from that file and prints it back to the mod; nothing else is read or sent. |

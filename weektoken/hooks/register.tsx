@@ -305,7 +305,31 @@ async function sampleUsageCommand($: any): Promise<{ ok: boolean; changed: boole
   if (r.exitCode !== 0) return { ok: false, changed: false }
   const s = P.parseUsageCommand(r.stdout, await $.clock.now())
   if (!s) return { ok: false, changed: false }
-  // For 5-hour / 7-day the session's own values (second precision) win; use these only if there's no local reading within 10 minutes (new session, no reply yet)
+  return { ok: true, changed: await addFresh($, s) }
+}
+
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+
+/**
+ * The same figures /usage shows, straight from Anthropic's usage endpoint and through the host:
+ * $.session.authorize() answers a handle, and the engine attaches the session's own login to the request
+ * (first-party hosts only), so the mod never sees the credential. About half a second, where starting a whole
+ * `claude -p /usage` takes 7-9 s. Null without a subscription login or when the answer can't be read;
+ * refresh then falls back to the command.
+ */
+async function sampleUsageApi($: any): Promise<{ ok: boolean; changed: boolean } | null> {
+  const auth = await $.session.authorize()
+  if (!auth?.handle || auth.kind !== 'bearer') return null
+  const r = await $.http.fetch(USAGE_URL, { auth: auth.handle, headers: { 'anthropic-beta': 'oauth-2025-04-20' } })
+  if (!r.ok) return null
+  let w: Record<string, P.Obs>
+  try { w = P.parseUtilization(JSON.parse(r.text)) } catch { return null }
+  if (!Object.keys(w).length) return null
+  return { ok: true, changed: await addFresh($, { t: await $.clock.now(), w }) }
+}
+
+/** Records a fresh account-wide reading. For 5-hour / 7-day the session's own values (second precision) win; use these only if there's no local reading within 10 minutes (new session, no reply yet) */
+async function addFresh($: any, s: Sample): Promise<boolean> {
   const samples = (await read($, samplesA)) ?? []
   const w: Record<string, P.Obs> = {}
   for (const [k, o] of Object.entries(s.w)) {
@@ -315,7 +339,7 @@ async function sampleUsageCommand($: any): Promise<{ ok: boolean; changed: boole
       if (!lo || s.t - lo.at > 10 * 60_000) w[k] = o
     }
   }
-  return { ok: true, changed: Object.keys(w).length ? await addSample($, { t: s.t, w }) : false }
+  return Object.keys(w).length ? addSample($, { t: s.t, w }) : false
 }
 
 /** Manual refresh "in progress": kept in state so the button shows "Refreshing…"; treated as done after 90 s (subprocess timeout is 60 s) */
@@ -332,8 +356,10 @@ async function refreshAll($: any, manual: boolean): Promise<void> {
     try { await sampleCache($, true) } catch {}
     try { await importHistory($) } catch {}
     if (!manual) return
+    // The usage endpoint first (about half a second); starting `claude -p /usage` only if that isn't available
     let ok = false
-    try { ok = (await sampleUsageCommand($)).ok } catch {}
+    try { ok = (await sampleUsageApi($))?.ok ?? false } catch {}
+    if (!ok) try { ok = (await sampleUsageCommand($)).ok } catch {}
     // Nothing on success (footer and chart update themselves); notify only when /usage fails
     if (!ok) $.ui.toast(L('没能运行 claude /usage:Fable 等分模型配额这次没更新', "Couldn't run claude /usage: per-model quotas such as Fable weren't updated"), { timeoutMs: 8_000 })
   } finally {
