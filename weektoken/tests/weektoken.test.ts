@@ -570,3 +570,16 @@ test('面板右下角署名后面跟版本号(取自自己的 plugin.json)', asy
   const term = await $.ui.mount({ plugin: 'weektoken', surface: 'terminal', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
   expect(JSON.stringify(await term.drawn())).toContain('@mj0011sec · v9.8.7')
 })
+
+test('桌面端面板上下层之间空两行(标题、标签、圆环、文字、底部按钮);终端仍空一行', async ($, on) => {
+  world(on)
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  const root = await pane.drawn() as any
+  expect(root.props.gap).toBe(2)
+  // 配速页里圆环和下面的文字之间
+  const pace = root.children.find((c: any) => c.props?.alignItems === 'center' && c.props?.flexDirection === 'column')
+  expect(pace.props.gap).toBe(2)
+  const term = await $.ui.mount({ plugin: 'weektoken', surface: 'terminal', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  expect((await term.drawn() as any).props.gap).toBe(1)
+})

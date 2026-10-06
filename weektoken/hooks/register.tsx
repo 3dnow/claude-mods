@@ -752,7 +752,7 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
     ? { kind: 'rate' as const, text: pace.burnRate.toFixed(2) }
     : d.kind === 'usageOnly' ? { kind: 'pct' as const, text: `${Math.round(d.obs.u)}%` } : { kind: 'none' as const }
   return (
-    <Box flexDirection="column" alignItems="center" gap={1}>
+    <Box flexDirection="column" alignItems="center" gap={2}>
       {/* 切换配额的箭头在标题两侧(见 drawPane);这一行只放图,居中 */}
       <Box flexDirection="row" justifyContent="center" width="100%">
         {pic($, e, ringsSvg({ used, elapsed: pace?.elapsed ?? null, status: st, id, center, label: P.displayLabel(d), title: label, readings: pace ? metrics.map(x => ({ label: x.l.toUpperCase(), value: x.v, accent: !!x.accent })) : [] }), label)}
@@ -902,7 +902,7 @@ function drawPane($: any, e: any, samples: readonly Sample[], activity: Activity
   )
   if (!row) {
     return (
-      <Box flexDirection="column" gap={1} paddingX={1} minHeight={fill}>
+      <Box flexDirection="column" gap={term ? 1 : 2} paddingX={1} minHeight={fill}>
         {drawEmpty($, e)}
         {footer}
         <Box flexGrow={1} />
@@ -945,7 +945,7 @@ function drawPane($: any, e: any, samples: readonly Sample[], activity: Activity
     </Box>
   )
   return (
-    <Box flexDirection="column" gap={1} paddingX={1} minHeight={fill}>
+    <Box flexDirection="column" gap={term ? 1 : 2} paddingX={1} minHeight={fill}>
       {header}
       {tabs}
       {view.tab === 'burnup' ? drawBurnUpTab($, e, samples, m, row, view, now) : drawPaceTab($, e, samples, m, row)}
