@@ -427,6 +427,39 @@ export function latestObs(samples: readonly Sample[], key: string): { obs: Obs; 
   return null
 }
 
+/**
+ * The longest stretch of `key`'s latest window without a reading: between two readings, or from the last one to now
+ * while the window lasts (`to` null). Reported only past the stale threshold, so the burn-up page can say why its line
+ * is short instead of leaving it quietly blank. Readings belong to the window when their reset time is within 5 minutes.
+ */
+export function readingGap(samples: readonly Sample[], key: string, W: number, now: number): { from: number; to: number | null; ms: number } | null {
+  const lo = latestObs(samples, key)
+  if (!lo || lo.obs.r == null) return null
+  const r = lo.obs.r
+  const start = r - W * 1000
+  const ts = samples.filter(s => s.t >= start && s.w[key]?.r != null && Math.abs((s.w[key]!.r as number) - r) <= 300_000).map(s => s.t).sort((a, b) => a - b)
+  if (!ts.length) return null
+  let best: { from: number; to: number | null; ms: number } | null = null
+  for (let i = 0; i + 1 < ts.length; i++) {
+    const ms = ts[i + 1]! - ts[i]!
+    if (!best || ms > best.ms) best = { from: ts[i]!, to: ts[i + 1]!, ms }
+  }
+  const last = ts[ts.length - 1]!
+  const end = Math.min(now, r)
+  if (end - last > (best?.ms ?? 0)) best = { from: last, to: now < r ? null : r, ms: end - last }
+  return best && best.ms > staleThreshold(W) * 1000 ? best : null
+}
+
+const hm = (t: number) => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
+
+/** The burn-up page's line about a gap: when it began, how long it lasted, and that the line has nothing there */
+export function gapText(g: { from: number; to: number | null; ms: number }, name: string): string {
+  const dur = formatDuration(g.ms / 1000)
+  return g.to == null
+    ? L(`⚠ ${name} ${hm(g.from)} 之后没有新读数（${dur}），这段曲线是空的`, `⚠ No ${name} reading since ${hm(g.from)} (${dur}); the line is empty from there`)
+    : L(`⚠ ${name} ${hm(g.from)} 到 ${hm(g.to)} 之间没有读数（${dur}）`, `⚠ No ${name} readings from ${hm(g.from)} to ${hm(g.to)} (${dur})`)
+}
+
 // ---------- Bottleneck: which quota the band above the input box shows ----------
 
 export function pickBottleneck(cands: readonly { key: string; pace: Pace | null }[]): string | null {
@@ -627,10 +660,11 @@ export function sameSample(a: Sample, b: Sample): boolean {
 }
 
 /**
- * Append a sample: skip if equivalent to the latest one with the same key set and under 5 minutes apart; trim from the front past the cap.
+ * Append a sample: skip if equivalent to the latest one with the same key set and under 5 minutes apart; trim from the front past `max`
+ * (none by default: the store's size is kept by fitSamples when written).
  * Sources cover different keys (live session has only 5h/7d, local cache also has Fable), so dedup only works against the same source.
  */
-export function appendSample(list: readonly Sample[], s: Sample, max = 8000): Sample[] {
+export function appendSample(list: readonly Sample[], s: Sample, max = Infinity): Sample[] {
   const sig = Object.keys(s.w).sort().join()
   let last: Sample | undefined
   for (let i = list.length - 1; i >= 0 && i >= list.length - 50; i--) {
@@ -646,7 +680,7 @@ export function appendSample(list: readonly Sample[], s: Sample, max = 8000): Sa
  * Merge two sample lists: samples at the same ms combine into one (the latter wins); then dedup by appendSample's rules —
  * when several sessions record the same reading at different ms, only the earliest within 5 minutes is kept.
  */
-export function mergeSamples(a: readonly Sample[], b: readonly Sample[], max = 8000): Sample[] {
+export function mergeSamples(a: readonly Sample[], b: readonly Sample[], max = Infinity): Sample[] {
   const byT = new Map<number, Sample>()
   for (const s of a) byT.set(s.t, s)
   for (const s of b) {
@@ -664,6 +698,54 @@ export function mergeSamples(a: readonly Sample[], b: readonly Sample[], max = 8
     out.push(s)
   }
   return out.length > max ? out.slice(out.length - max) : out
+}
+
+const DAY = 86_400_000
+// By age: kept whole up to the first limit; past it, one sample per step for each set of windows
+const TIERS: readonly [limit: number, step: number][] = [[14 * DAY, 0], [45 * DAY, 30 * 60_000], [120 * DAY, 2 * 3600_000], [Infinity, 6 * 3600_000]]
+
+/**
+ * Thin old samples so a long history fits the store. The last 14 days stay whole; older samples keep one per step for each
+ * set of windows (30 minutes to 45 days back, 2 hours to 120 days, 6 hours beyond), and always the first of a set and the
+ * last reading before any window resets, so every window keeps its start and its peak. `scale` > 1 thins harder: the whole
+ * span shrinks by it (down to a day) and every step grows by it.
+ */
+export function compactSamples(list: readonly Sample[], now: number, scale = 1): Sample[] {
+  const step = (t: number) => {
+    const age = now - t
+    if (age < Math.max(DAY, TIERS[0]![0] / scale)) return 0
+    for (const [limit, st] of TIERS.slice(1)) if (age < limit) return st * scale
+    return TIERS[TIERS.length - 1]![1] * scale
+  }
+  const sig = (s: Sample) => Object.keys(s.w).sort().join()
+  const nextOf = new Map<string, Sample>()
+  const keep: boolean[] = new Array(list.length)
+  for (let i = list.length - 1; i >= 0; i--) {
+    const s = list[i]!
+    const k = sig(s)
+    const n = nextOf.get(k)
+    nextOf.set(k, s)
+    const st = step(s.t)
+    if (!n || st === 0) { keep[i] = true; continue }
+    const resets = Object.keys(s.w).some(w => {
+      const a = s.w[w]!.r
+      const b = n.w[w]?.r
+      return a != null && b != null && Math.abs(a - b) > 5000
+    })
+    keep[i] = resets || Math.floor(s.t / st) !== Math.floor(n.t / (step(n.t) || st))
+  }
+  // The first sample of each set of windows is where its history starts
+  const seen = new Set<string>()
+  list.forEach((s, i) => { const k = sig(s); if (!seen.has(k)) { seen.add(k); keep[i] = true } })
+  return list.filter((_, i) => keep[i])
+}
+
+/** Thin until the JSON fits `maxBytes`: harder and harder, and only past 64× drop the oldest */
+export function fitSamples(list: readonly Sample[], now: number, maxBytes = 1_500_000): Sample[] {
+  let out = compactSamples(list, now)
+  for (let scale = 2; JSON.stringify(out).length > maxBytes && scale <= 64; scale *= 2) out = compactSamples(out, now, scale)
+  while (out.length > 1 && JSON.stringify(out).length > maxBytes) out = out.slice(Math.ceil(out.length / 10))
+  return out
 }
 
 // ---------- Data source parsing ----------

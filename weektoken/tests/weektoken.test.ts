@@ -40,9 +40,16 @@ function world(on: any, setting = '中文', apple = APPLE_EN, env: Record<string
       await (stored.__usageGate as Promise<void> | undefined)
       return { value: stored.__usageFail ? { exitCode: 1, stdout: '', stderr: 'boom' } : { exitCode: 0, stdout: (stored.__usageOut as string | undefined) ?? USAGE_OUT, stderr: '' } }
     }
+    const files = stored.__files as Record<string, string> | undefined
+    if (e.argv[0] === 'tail' && files?.[e.argv[e.argv.length - 1]!] != null) {
+      const lines = files[e.argv[e.argv.length - 1]!]!.split('\n').filter(Boolean)
+      const n = Number(e.argv[2])
+      return { value: { exitCode: 0, stdout: lines.slice(-n).join('\n') + '\n', stderr: '' } }
+    }
     return { value: { exitCode: 1, stdout: '', stderr: '' } }
   })
-  on('fs.exists', () => ({ value: false }))
+  // Files are absent unless a test puts them in __files (path → content, mtime 1)
+  on('fs.exists', (_$: unknown, e: { path: string }) => ({ value: !!(stored.__files as Record<string, string> | undefined)?.[e.path] }))
   const registered: string[] = []
   on('command.register', (_$: unknown, e: { name: string }) => { registered.push(e.name); return { value: { command: e.name } } })
   on('ui.toast', (_$: unknown, e: unknown) => { toasts.push(JSON.stringify(e)); return { value: undefined } })
@@ -622,3 +629,98 @@ test('Refresh falls back to claude /usage when the usage endpoint fails', async 
   expect(stored.__claudeRuns).toBe(1)
   expect((stored.samples as { w: Record<string, unknown> }[]).some(s => s.w.weekly_fable)).toBe(true)
 })
+
+const clockOf = (stored: Record<string, unknown>) => stored.__clock as { advance: (ms: number) => Promise<void> }
+const usageApi = (on: any, fetched: string[], answer = () => ({ status: 200, ok: true, headers: {}, text: JSON.stringify(API_USAGE) })) => {
+  on('session.authorize', () => ({ value: { handle: 'h1', kind: 'bearer' } }))
+  on('http.fetch', (_$: unknown, e: { url: string }) => { fetched.push(e.url); return { value: answer() } })
+}
+
+test('With no refresh pressed and nothing else running /usage, the usage endpoint is read every 15 minutes, Fable included', async ($, on) => {
+  const stored = world(on)
+  const fetched: string[] = []
+  usageApi(on, fetched)
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  await clockOf(stored).advance(60_000)
+  expect(fetched.length).toBe(1)
+  expect((stored.samples as { w: Record<string, unknown> }[]).some(s => s.w.weekly_fable)).toBe(true)
+  await clockOf(stored).advance(15 * 60_000)
+  expect(fetched.length).toBe(2)
+  expect(stored.__claudeRuns ?? 0).toBe(0)
+})
+
+test('Sessions share the schedule: a read another session made moments ago is not repeated', async ($, on) => {
+  const stored = world(on)
+  const fetched: string[] = []
+  usageApi(on, fetched)
+  stored.usageFetch = { at: NOW, backoffUntil: 0 }
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  await clockOf(stored).advance(60_000)
+  expect(fetched.length).toBe(0)
+  await clockOf(stored).advance(15 * 60_000)
+  expect(fetched.length).toBe(1)
+})
+
+test('A failing usage endpoint is left alone for an hour', async ($, on) => {
+  const stored = world(on)
+  const fetched: string[] = []
+  usageApi(on, fetched, () => ({ status: 429, ok: false, headers: {}, text: 'slow down' }))
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  await clockOf(stored).advance(60_000)
+  expect(fetched.length).toBe(1)
+  await clockOf(stored).advance(30 * 60_000)
+  expect(fetched.length).toBe(1)
+  await clockOf(stored).advance(45 * 60_000)
+  expect(fetched.length).toBe(2)
+})
+
+test('Burn-up says so when a quota has had no reading for a long stretch of this window, instead of a quietly short line', async ($, on) => {
+  const stored = world(on)
+  const r = NOW + 2 * 86400_000
+  const samples: unknown[] = []
+  for (let t = NOW - 5 * 86400_000; t <= NOW - 2 * 86400_000; t += 3600_000) samples.push({ t, w: { weekly_fable: { u: Math.round((t - (NOW - 5 * 86400_000)) / 86400_000 * 10), r, n: 'Fable' } } })
+  stored.samples = samples
+  stored.bandKey = 'weekly_fable'
+  stored.view = { key: 'weekly_fable' }
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  await ui.drawn()
+  await ui.press({ key: 'tab-burnup' } as any)
+  const burn = JSON.stringify(await ui.drawn())
+  expect(burn).toContain('之后没有新读数')
+  expect(burn).toContain('2 天')
+})
+
+test('Writing samples keeps the oldest history: older samples are thinned, not cut at a fixed count', async ($, on) => {
+  const stored = world(on)
+  const samples: unknown[] = []
+  // 100 days, one reading every 15 minutes: 9600 samples, more than the old cap of 8000
+  for (let t = NOW - 100 * 86400_000; t < NOW - 3600_000; t += 15 * 60_000) samples.push({ t, w: { seven_day: { u: 10 + Math.round(((t / 60_000) % 10080) / 200), r: t - (t % (7 * 86400_000)) + 7 * 86400_000 } } })
+  stored.samples = samples
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  await clockOf(stored).advance(61_000)
+  const kept = stored.samples as { t: number }[]
+  expect(kept[0]!.t).toBe((samples[0] as { t: number }).t)
+  expect(kept.length).toBeLessThan(samples.length)
+  // The last two weeks are kept whole
+  const recent = (samples as { t: number }[]).filter(x => x.t > NOW - 13 * 86400_000).length
+  expect(kept.filter(x => x.t > NOW - 13 * 86400_000 && x.t < NOW - 1800_000).length).toBe(recent)
+})
+
+test('The whole history file of the macOS app is imported once, not only its last 8000 lines', async ($, on) => {
+  const stored = world(on, '中文', APPLE_EN, { HOME: '/home/u' })
+  const rows: string[] = []
+  for (let i = 0; i < 9000; i++) {
+    const t = (NOW - (9000 - i) * 10 * 60_000) / 1000
+    rows.push(JSON.stringify({ t, rl: { seven_day: { used_percentage: (i % 100), resets_at: t + 3600 } } }))
+  }
+  stored.__files = { '/home/u/.weektoken/samples.jsonl': rows.join('\n') }
+  // Imported before by an earlier version, at the same file time: the full import still happens once
+  stored.historyMtime = 1
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 1, isLink: false } }))
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  await clockOf(stored).advance(1_000)
+  const first = (stored.samples as { t: number }[])[0]!.t
+  expect(first).toBe(NOW - 9000 * 10 * 60_000)
+})
+

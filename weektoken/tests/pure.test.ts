@@ -115,3 +115,48 @@ test('Local cache: a per-model quota given both at top level and in limits[] is 
   })
   expect(Object.keys(w).sort()).toEqual(['weekly_opus'])
 })
+
+test('Reading gap: the longest stretch of a window without a reading, up to now, once longer than the stale threshold', () => {
+  const W7 = 7 * 86400
+  const r = NOW + 2 * 86400_000
+  const at = (h: number, u: number) => ({ t: NOW + h * 3600_000, w: { weekly_fable: { u, r: r + (h % 2 ? 300 : 0) } } })
+  const stopped = [at(-72, 10), at(-60, 20), at(-48, 30)]
+  expect(P.readingGap(stopped, 'weekly_fable', W7, NOW)).toEqual({ from: NOW - 48 * 3600_000, to: null, ms: 48 * 3600_000 })
+  // Readings keep coming: no gap worth a word
+  const steady = Array.from({ length: 40 }, (_, i) => at(-i, 50 - i))
+  expect(P.readingGap(steady, 'weekly_fable', W7, NOW)).toBeNull()
+  // A hole inside the window that has since filled
+  const hole = [at(-72, 10), at(-71, 11), at(-20, 30), at(-1, 31)]
+  expect(P.readingGap(hole, 'weekly_fable', W7, NOW)).toEqual({ from: NOW - 71 * 3600_000, to: NOW - 20 * 3600_000, ms: 51 * 3600_000 })
+  expect(P.readingGap([], 'weekly_fable', W7, NOW)).toBeNull()
+})
+
+test('Thinning: the last 14 days whole, older samples one per period per set of windows, the reading before each reset kept', () => {
+  const W7 = 7 * 86400_000
+  const list: P.Sample[] = []
+  for (let t = NOW - 90 * 86400_000; t <= NOW; t += 5 * 60_000) {
+    const r = t - (t % W7) + W7
+    list.push({ t, w: { seven_day: { u: Math.round(((t % W7) / W7) * 100), r } } })
+  }
+  const c = P.compactSamples(list, NOW)
+  expect(c.length).toBeLessThan(list.length / 3)
+  expect(c[0]!.t).toBe(list[0]!.t)
+  expect(c.filter(s => s.t > NOW - 14 * 86400_000).length).toBe(list.filter(s => s.t > NOW - 14 * 86400_000).length)
+  // Every window's last reading before its reset survives, so its peak does
+  for (let i = 0; i + 1 < list.length; i++) {
+    if (list[i]!.w.seven_day!.r !== list[i + 1]!.w.seven_day!.r) expect(c.some(s => s.t === list[i]!.t)).toBe(true)
+  }
+  // Within 30 to 45 days back, no more than one reading per 30 minutes
+  const mid = c.filter(s => s.t < NOW - 30 * 86400_000 && s.t > NOW - 45 * 86400_000)
+  expect(mid.length).toBeLessThanOrEqual(15 * 48 + 5)
+})
+
+test('Fitting a byte budget thins further before anything old is dropped', () => {
+  const list: P.Sample[] = []
+  const end = (t: number, W: number) => t - (t % W) + W
+  for (let t = NOW - 200 * 86400_000; t <= NOW; t += 5 * 60_000) list.push({ t, w: { five_hour: { u: 1, r: end(t, 5 * 3600_000) }, seven_day: { u: 2, r: end(t, 7 * 86400_000) } } })
+  const fit = P.fitSamples(list, NOW, 400_000)
+  expect(JSON.stringify(fit).length).toBeLessThanOrEqual(400_000)
+  expect(fit[0]!.t).toBe(list[0]!.t)
+})
+

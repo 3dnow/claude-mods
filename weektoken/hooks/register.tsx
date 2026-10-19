@@ -142,12 +142,13 @@ async function addSample($: any, s: Sample): Promise<boolean> {
 async function persistSamples($: any): Promise<void> {
   const stored = await $.store.get('samples')
   const mine = (await read($, samplesA)) ?? []
-  let merged = P.mergeSamples(Array.isArray(stored) ? (stored as Sample[]) : [], mine)
+  const now = await $.clock.now()
+  // Old samples are thinned, not cut: the history keeps its start (the store is capped at 4 MiB of JSON, written indented)
+  let merged = P.fitSamples(P.mergeSamples(Array.isArray(stored) ? (stored as Sample[]) : [], mine), now)
   try {
     await $.store.set('samples', merged)
   } catch {
-    // Storage is size-capped (4 MiB per plugin): if the write fails, drop the oldest quarter and retry once
-    merged = merged.slice(Math.floor(merged.length / 4))
+    merged = P.fitSamples(merged, now, 800_000)
     await $.store.set('samples', merged)
   }
   // Small revision tag: other sessions check it every minute and skip reading the full samples if unchanged
@@ -245,6 +246,8 @@ async function extractCacheWithPerl($: any, path: string): Promise<string | null
   return null
 }
 
+const HISTORY_IMPORT = 2
+
 /** History from WeekToken for macOS (read-only); default location, override with WEEKTOKEN_HISTORY, empty string disables import. Skipped if the file is unchanged; returns the count newly imported */
 async function importHistory($: any): Promise<number> {
   const file = ((await $.env.get('WEEKTOKEN_HISTORY')) ?? '~/.weektoken/samples.jsonl').trim()
@@ -252,8 +255,10 @@ async function importHistory($: any): Promise<number> {
   const path = await expandHome($, file)
   if (!(await $.fs.exists(path))) return 0
   const st = await $.fs.stat(path)
-  if ((await $.store.get('historyMtime')) === st.mtimeMs) return 0
-  const r = await $.process.run(['tail', '-n', '8000', path], { timeoutMs: 15_000 })
+  // The whole file once (versions before 0.2.21 read only its last 8000 lines); after that, the lines added since
+  const whole = (await $.store.get('historyImport')) !== HISTORY_IMPORT
+  if (!whole && (await $.store.get('historyMtime')) === st.mtimeMs) return 0
+  const r = await $.process.run(['tail', '-n', whole ? '1000000' : '2000', path], { timeoutMs: 30_000 })
   if (r.exitCode !== 0) return 0
   const imported = P.parseSamplesJsonl(r.stdout, await $.clock.now())
   let added = 0
@@ -264,6 +269,7 @@ async function importHistory($: any): Promise<number> {
   })
   await persistSamples($)
   await $.store.set('historyMtime', st.mtimeMs)
+  await $.store.set('historyImport', HISTORY_IMPORT)
   if (added) await refreshBand($)
   return added
 }
@@ -342,6 +348,23 @@ async function addFresh($: any, s: Sample): Promise<boolean> {
   return Object.keys(w).length ? addSample($, { t: s.t, w }) : false
 }
 
+const AUTO_USAGE_MS = 15 * 60_000
+
+/**
+ * Read every quota (Fable and other per-model ones included) from the usage endpoint on a schedule, so the history goes on
+ * without a refresh press or another app running /usage (per-model figures in ~/.claude.json only move when something does).
+ * Sessions share one schedule through the store; a failed read (no subscription login, rate limited) waits an hour.
+ */
+async function autoUsage($: any): Promise<void> {
+  const now = await $.clock.now()
+  const last = (await $.store.get('usageFetch')) as { at?: number; backoffUntil?: number } | undefined
+  if ((last?.at ?? 0) > now - (AUTO_USAGE_MS - 60_000) || (last?.backoffUntil ?? 0) > now) return
+  await $.store.set('usageFetch', { at: now, backoffUntil: 0 })
+  let ok = false
+  try { ok = (await sampleUsageApi($))?.ok ?? false } catch {}
+  if (!ok) await $.store.set('usageFetch', { at: now, backoffUntil: now + 60 * 60_000 })
+}
+
 /** Manual refresh "in progress": kept in state so the button shows "Refreshing…"; treated as done after 90 s (subprocess timeout is 60 s) */
 const isBusy = (note: Note, now: number) => !!note?.busy && now - note.at < 90_000
 
@@ -359,6 +382,7 @@ async function refreshAll($: any, manual: boolean): Promise<void> {
     // The usage endpoint first (about half a second); starting `claude -p /usage` only if that isn't available
     let ok = false
     try { ok = (await sampleUsageApi($))?.ok ?? false } catch {}
+    if (ok) await $.store.set('usageFetch', { at: await $.clock.now(), backoffUntil: 0 })
     if (!ok) try { ok = (await sampleUsageCommand($)).ok } catch {}
     // Nothing on success (footer and chart update themselves); notify only when /usage fails
     if (!ok) $.ui.toast(L('没能运行 claude /usage:Fable 等分模型配额这次没更新', "Couldn't run claude /usage: per-model quotas such as Fable weren't updated"), { timeoutMs: 8_000 })
@@ -796,6 +820,9 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
 function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row: QuotaRow, view: PaneView, now: number) {
   const { Box, Text, Button, Select } = $.ui.resolve(e)
   const o = P.buildOverlay(row.key, samples, row.len.seconds, view.range, view.offset, now)
+  // A long stretch of this window without readings is said, not left as a quietly short line
+  const gap = view.range === 'current' && view.offset === 0 ? P.readingGap(samples, row.key, row.len.seconds, now) : null
+  const gapNote = gap ? <Text wrap="wrap">{P.gapText(gap, row.name)}</Text> : null
   const ranges: P.Range[] = ['current', 'month', 'all']
   // Desktop already has arrows beside the title, so none here; terminal uses a dropdown; surfaces without Select (mobile) fall back to prev/next buttons
   const quotaPick = m.keys.length < 2 || e.surface !== 'terminal' ? null : Select ? (
@@ -828,6 +855,7 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
     return (
       <Box flexDirection="column" gap={1}>
         {rangeRow}
+        {gapNote}
         <Text dimColor wrap="wrap">{L('这个窗口的采样还不够画趋势', 'Not enough samples in this window yet')}</Text>
       </Box>
     )
@@ -843,6 +871,7 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
         {rangeRow}
         {nav}
         <Text>{L(`峰值 ${Math.round(s.peak * 100)}%`, `Peak ${Math.round(s.peak * 100)}%`)}</Text>
+        {gapNote}
         {caption ? <Text dimColor wrap="wrap">{caption}</Text> : null}
         <Text dimColor>{L('(曲线图在桌面端显示)', '(The chart shows in the desktop app)')}</Text>
       </Box>
@@ -886,6 +915,7 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
       {rangeRow}
       {nav}
       {chart}
+      {gapNote}
       {exploring ? <Text dimColor wrap="wrap">{L('鼠标指到一条线上，看它是哪个窗口、峰值多少', 'Point at a line to see its window and peak')}</Text> : null}
       {caption ? <Text dimColor wrap="wrap">{caption}</Text> : null}
     </Box>
@@ -1027,6 +1057,9 @@ export const register: Register = on => {
     timers = [
       $.clock.every(5 * 60_000, () => { void sampleCache($).catch(() => {}) }),
       $.clock.every(10 * 60_000, () => { void importHistory($).catch(() => {}) }),
+      $.clock.every(AUTO_USAGE_MS, () => { void autoUsage($).catch(() => {}) }),
+      // Shortly after start too, so a session opened after a long pause catches up without waiting a full period
+      $.clock.after(20_000, () => { void autoUsage($).catch(() => {}) }),
       // Every minute: merge samples recorded by other sessions; "elapsed %" moves with time, so recompute the band, writing nothing if the display is unchanged
       $.clock.every(60_000, () => { void adoptStoredSamples($).then(() => refreshBand($)).catch(() => {}) }),
     ]
