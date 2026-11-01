@@ -697,10 +697,25 @@ test('Sessions share the schedule: a read another session made moments ago is no
   const fetched: string[] = []
   usageApi(on, fetched)
   stored.usageFetch = { at: NOW, backoffUntil: 0 }
+  stored.listed = { at: NOW + 500, keys: ['five_hour', 'seven_day', 'weekly_fable'] }
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   await clockOf(stored).advance(60_000)
   expect(fetched.length).toBe(0)
   await clockOf(stored).advance(15 * 60_000)
+  expect(fetched.length).toBe(1)
+})
+
+test('A recent read that left no quota list (a session on an older version made it) is made again', async ($, on) => {
+  const stored = world(on)
+  const fetched: string[] = []
+  usageApi(on, fetched)
+  stored.usageFetch = { at: NOW, backoffUntil: 0 }
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  await clockOf(stored).advance(60_000)
+  expect(fetched.length).toBe(1)
+  expect((stored.listed as { keys: string[] }).keys).toEqual(['five_hour', 'seven_day', 'weekly_fable'])
+  // Now with a list, the shared schedule holds again
+  await clockOf(stored).advance(5 * 60_000)
   expect(fetched.length).toBe(1)
 })
 

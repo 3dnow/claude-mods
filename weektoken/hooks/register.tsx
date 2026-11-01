@@ -382,7 +382,11 @@ const AUTO_USAGE_MS = 15 * 60_000
 async function autoUsage($: any): Promise<void> {
   const now = await $.clock.now()
   const last = (await $.store.get('usageFetch')) as { at?: number; backoffUntil?: number } | undefined
-  if ((last?.at ?? 0) > now - (AUTO_USAGE_MS - 60_000) || (last?.backoffUntil ?? 0) > now) return
+  const listed = (await $.store.get('listed')) as QuotaList | undefined
+  // A read another session made recently is not repeated, unless it left no quota list (a session still on an older
+  // version): without one, a quota the plan dropped would stay on the band until that session reloads
+  const recent = (last?.at ?? 0) > now - (AUTO_USAGE_MS - 60_000) && (listed?.at ?? 0) >= (last?.at ?? 0)
+  if (recent || (last?.backoffUntil ?? 0) > now) return
   await $.store.set('usageFetch', { at: now, backoffUntil: 0 })
   let ok = false
   try { ok = (await sampleUsageApi($))?.ok ?? false } catch {}
