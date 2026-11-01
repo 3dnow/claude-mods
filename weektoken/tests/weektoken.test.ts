@@ -649,6 +649,49 @@ test('With no refresh pressed and nothing else running /usage, the usage endpoin
   expect(stored.__claudeRuns ?? 0).toBe(0)
 })
 
+// A verified Ultra account: no 5-hour limit, so the endpoint and the session's own limits carry 7-day and Fable only
+const ULTRA_USAGE = {
+  five_hour: null,
+  seven_day: { utilization: 28, resets_at: new Date(NOW + 2 * 86400_000).toISOString() },
+  limits: [
+    { kind: 'weekly_all', percent: 28, resets_at: new Date(NOW + 2 * 86400_000).toISOString() },
+    { kind: 'weekly_scoped', percent: 25, resets_at: new Date(NOW + 2 * 86400_000).toISOString(), scope: { model: { display_name: 'Fable' } } },
+  ],
+}
+
+test('A quota the usage endpoint stops listing (5-hour on Ultra) leaves the band and pane, and comes back when listed again', async ($, on) => {
+  const stored = world(on)
+  const fetched: string[] = []
+  let answer: unknown = ULTRA_USAGE
+  usageApi(on, fetched, () => ({ status: 200, ok: true, headers: {}, text: JSON.stringify(answer) }))
+  // The last 5-hour reading is from before the plan changed; the band was set to it
+  stored.samples = [{ t: NOW - 6 * 3600_000, w: { five_hour: { u: 10, r: NOW - 2 * 3600_000 }, seven_day: { u: 27, r: NOW + 2 * 86400_000 } } }]
+  stored.bandKey = 'five_hour'
+  stored.__limits = [{ kind: 'seven_day', percentUsed: 28, resetsAt: iso(NOW + 2 * 86400_000) }]
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const band = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
+  // Before the endpoint answers, the old 5-hour reading is still what the band was set to
+  expect(JSON.stringify(await band.drawn())).toContain('5 小时')
+  await clockOf(stored).advance(60_000)
+  expect(fetched.length).toBe(1)
+  expect(stored.listed).toEqual({ at: NOW + 20_000, keys: ['seven_day', 'weekly_fable'] })
+  const shown = JSON.stringify(await band.drawn())
+  expect(shown).not.toContain('5 小时')
+  expect(shown).toContain('7 天')
+  // The pick is kept, so the band goes back to 5-hour if the plan has it again
+  expect(stored.bandKey).toBe('five_hour')
+  const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  const drawn = JSON.stringify(await pane.drawn())
+  expect(drawn).toContain('用量接口已不再返回')
+  expect(drawn).not.toContain('5 小时会话额度 ›')
+
+  answer = API_USAGE
+  await clockOf(stored).advance(15 * 60_000)
+  expect(fetched.length).toBe(2)
+  expect(JSON.stringify(await band.drawn())).toContain('5 小时')
+  expect(JSON.stringify(await pane.drawn())).not.toContain('用量接口已不再返回')
+})
+
 test('Sessions share the schedule: a read another session made moments ago is not repeated', async ($, on) => {
   const stored = world(on)
   const fetched: string[] = []

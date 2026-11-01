@@ -49,6 +49,8 @@ Samples are kept in the mod's own cross-session store, up to 8000; the oldest go
 
 A quota you are not using does not change, so old data still gives a valid pace.
 
+A quota your plan no longer has is hidden. The usage endpoint lists every quota the plan has, idle ones included, so when its latest answer leaves one out (verified Ultra accounts have no 5-hour limit), that quota leaves the band and the pane, and the pane says so. If the endpoint lists it again, it comes back.
+
 ## Commands
 
 | Command | Does |

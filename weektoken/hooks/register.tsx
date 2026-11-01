@@ -10,7 +10,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Activity, BandMode, BandShow, Note, PaneView, Sample } from '../types'
+import type { Activity, BandMode, BandShow, Note, PaneView, QuotaList, Sample } from '../types'
 import { L, langFromAppleLanguages, langFromEnv, langFromSetting, setLang, type Lang } from './i18n.ts'
 import * as P from './pace.ts'
 import { identity, identityText, statusText, STATUS } from './theme.ts'
@@ -28,6 +28,8 @@ const confirmHideA = atom({ plugin: 'weektoken', key: 'confirmHide' } as const, 
 const bandKeyA = atom({ plugin: 'weektoken', key: 'bandKey' } as const, null as string | null)
 const bandShowA = atom({ plugin: 'weektoken', key: 'bandShow' } as const, null as BandShow | null)
 const activityA = atom({ plugin: 'weektoken', key: 'activity' } as const, { byModel: {} } as Activity)
+// Quotas the usage endpoint listed last time (shared through the store); ones it stopped listing are hidden
+const listedA = atom({ plugin: 'weektoken', key: 'listed' } as const, null as QuotaList)
 // Whether the pane is open: the band button reads "Close" or "Details" from this
 const paneOpenA = atom({ plugin: 'weektoken', key: 'paneOpen' } as const, false)
 /** Loaded version: read from our own plugin.json at session start, drawn after the credit */
@@ -57,10 +59,12 @@ type QuotaRow = {
   full: string
 }
 
-type Model = { keys: string[]; rows: Record<string, QuotaRow>; band: string | null; selected: string | null }
+type Model = { keys: string[]; rows: Record<string, QuotaRow>; band: string | null; selected: string | null; retired: string[] }
 
-function buildModel(samples: readonly Sample[], view: PaneView, now: number, bandKey: string | null = null): Model {
-  const keys = P.discoveredKeys(samples)
+function buildModel(samples: readonly Sample[], view: PaneView, now: number, bandKey: string | null = null, listed: QuotaList = null): Model {
+  // Quotas the plan no longer has are left out, so a band set to one falls back to the tightest of the rest
+  const retired = P.retiredKeys(samples, listed)
+  const keys = P.discoveredKeys(samples).filter(k => !retired.includes(k))
   const rows: Record<string, QuotaRow> = {}
   for (const k of keys) {
     const lo = P.latestObs(samples, k)
@@ -81,13 +85,13 @@ function buildModel(samples: readonly Sample[], view: PaneView, now: number, ban
   const band = bandKey && rows[bandKey] ? bandKey : bottleneck
   // Pane and band show the same quota (both written on switch); if none was picked, both show the tightest
   const selected = view.key && rows[view.key] ? view.key : (band ?? keys[0] ?? null)
-  return { keys, rows, band, selected }
+  return { keys, rows, band, selected, retired }
 }
 
 /** What the band draws, rounded to display precision; null if it can't be computed (band falls back to native rendering) */
-function bandShowOf(samples: readonly Sample[], bandKey: string | null, now: number): BandShow | null {
+function bandShowOf(samples: readonly Sample[], bandKey: string | null, now: number, listed: QuotaList = null): BandShow | null {
   if (!samples.length) return null
-  const m = buildModel(samples, DEFAULT_VIEW, now, bandKey)
+  const m = buildModel(samples, DEFAULT_VIEW, now, bandKey, listed)
   const row = m.band ? m.rows[m.band] : undefined
   if (!row) return null
   // Last observed window is past its reset time: that usage is void, so the band says "reset" until the next reply brings a new window
@@ -173,6 +177,16 @@ async function adoptStoredSamples($: any): Promise<boolean> {
   return true
 }
 
+/** Take the quota list another session stored when it is newer than ours; true if it changed */
+async function adoptListed($: any): Promise<boolean> {
+  const stored = (await $.store.get('listed')) as QuotaList | undefined
+  if (!stored || !Array.isArray(stored.keys) || typeof stored.at !== 'number') return false
+  const mine = (await read($, listedA)) ?? null
+  if (mine && mine.at >= stored.at) return false
+  await update($, listedA, () => stored)
+  return true
+}
+
 const mergeActivity = (a: Activity, b: Activity): Activity => {
   const byModel: Record<string, number> = { ...(a.byModel ?? {}) }
   for (const [k, t] of Object.entries(b.byModel ?? {})) byModel[k] = Math.max(byModel[k] ?? 0, t)
@@ -200,7 +214,7 @@ function isBlank(node: any): boolean {
 
 /** Recompute what the band draws; skip the write if unchanged, so no redraw */
 async function refreshBand($: any): Promise<void> {
-  const next = bandShowOf((await read($, samplesA)) ?? [], (await read($, bandKeyA)) ?? null, await $.clock.now())
+  const next = bandShowOf((await read($, samplesA)) ?? [], (await read($, bandKeyA)) ?? null, await $.clock.now(), (await read($, listedA)) ?? null)
   const cur = (await read($, bandShowA)) ?? null
   if (JSON.stringify(next) === JSON.stringify(cur)) return
   await update($, bandShowA, () => next)
@@ -286,6 +300,7 @@ async function loadState($: any): Promise<void> {
     await update($, bandKeyA, () => k)
     await update($, viewA, cur => ({ ...(cur ?? DEFAULT_VIEW), key: k }))
   }
+  await adoptListed($)
   const act = (await $.store.get('activity')) as Activity | undefined
   if (act && typeof act === 'object') await update($, activityA, cur => mergeActivity(cur ?? { byModel: {} }, act))
   const band = await $.store.get('band')
@@ -331,7 +346,16 @@ async function sampleUsageApi($: any): Promise<{ ok: boolean; changed: boolean }
   let w: Record<string, P.Obs>
   try { w = P.parseUtilization(JSON.parse(r.text)) } catch { return null }
   if (!Object.keys(w).length) return null
-  return { ok: true, changed: await addFresh($, { t: await $.clock.now(), w }) }
+  const t = await $.clock.now()
+  const keys = Object.keys(w).sort()
+  const prev = (await read($, listedA)) ?? null
+  const listed = { at: t, keys }
+  await update($, listedA, () => listed)
+  await $.store.set('listed', listed)
+  const changed = await addFresh($, { t, w })
+  // A quota appearing or disappearing changes what the band can show even when no reading is new
+  if (!changed && prev?.keys.join() !== keys.join()) await refreshBand($)
+  return { ok: true, changed }
 }
 
 /** Records a fresh account-wide reading. For 5-hour / 7-day the session's own values (second precision) win; use these only if there's no local reading within 10 minutes (new session, no reply yet) */
@@ -764,6 +788,7 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
   // Trend is only supplementary, no extra color (amber and the quota blue are near-complementary and look cheapest together)
   const trendLine = trend && trend !== 'steady' ? <Text dimColor>{trendText(trend)}</Text> : null
   const showBadge = !P.isVerifiedByData(row.len.source)
+  const retiredNote = m.retired.length ? <Text dimColor wrap="wrap">{P.retiredText(m.retired, samples)}</Text> : null
   const canSwitch = m.keys.length > 1
   const target = (offset: number) => P.neighbor(row.key, m.keys, offset) as string
   // Readings rounded, matching the band
@@ -788,6 +813,7 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
         {trendLine}
         <Text>{metrics.map(x => `${x.l} ${x.v}`).join('   ')}</Text>
         {showBadge ? <Text dimColor>？{P.windowNote(row.len)}</Text> : null}
+        {retiredNote}
         {canSwitch ? (
           <Box flexDirection="row" gap={2}>
             <Button key="prev" label={`‹ ${m.rows[target(-1)]?.full ?? ''}`} hotkey="h" onPress={paneAct('prev', () => stepKey($, m.keys, row.key, -1))} />
@@ -813,6 +839,7 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
         {trendLine}
       </Box>
       {showBadge ? <Text dimColor>？{P.windowNote(row.len)}</Text> : null}
+      {retiredNote}
     </Box>
   )
 }
@@ -1061,7 +1088,7 @@ export const register: Register = on => {
       // Shortly after start too, so a session opened after a long pause catches up without waiting a full period
       $.clock.after(20_000, () => { void autoUsage($).catch(() => {}) }),
       // Every minute: merge samples recorded by other sessions; "elapsed %" moves with time, so recompute the band, writing nothing if the display is unchanged
-      $.clock.every(60_000, () => { void adoptStoredSamples($).then(() => refreshBand($)).catch(() => {}) }),
+      $.clock.every(60_000, () => { void adoptStoredSamples($).then(() => adoptListed($)).then(() => refreshBand($)).catch(() => {}) }),
     ]
     return next(e)
   })
@@ -1160,7 +1187,8 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const activity = (await read($, activityA)) ?? { byModel: {} }
     const bandKey = (await read($, bandKeyA)) ?? null
+    const listed = (await read($, listedA)) ?? null
     paneVersion = (await read($, versionA)) ?? ''
-    return drawPane($, e, samples, activity, view, note, band, buildModel(samples, view, now, bandKey), now)
+    return drawPane($, e, samples, activity, view, note, band, buildModel(samples, view, now, bandKey, listed), now)
   })
 }

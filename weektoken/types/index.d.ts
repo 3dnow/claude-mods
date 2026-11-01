@@ -36,6 +36,12 @@ export type BandShow = {
 /** Time of the latest reply across local sessions: any = any model, byModel = per model family (fable / opus …) */
 export type Activity = { any?: number; byModel: Record<string, number> }
 
+/**
+ * The quotas in the usage endpoint's latest readable answer, and when it came. The endpoint lists every quota the plan
+ * has (an idle 5-hour window too, at 0%), so one missing from it is no longer part of the plan.
+ */
+export type QuotaList = { at: number; keys: string[] } | null
+
 /** UI language: Chinese / English */
 export type Lang = 'zh' | 'en'
 
@@ -58,6 +64,8 @@ declare module 'claude-code' {
       paneOpen: boolean
       lang: Lang
       activity: Activity
+      /** Quotas the usage endpoint listed last time; ones it stopped listing are hidden */
+      listed: QuotaList
       /** Loaded version (from its own plugin.json), drawn after the pane's credit line */
       version: string
     }

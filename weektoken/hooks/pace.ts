@@ -411,6 +411,30 @@ export function discoveredKeys(samples: readonly Sample[]): string[] {
   return sortKeys([...hadReset].filter(k => hadUse.has(k) || isKnown(k)))
 }
 
+/**
+ * Quotas the plan no longer has: the usage endpoint's latest answer came after the quota's last reading and left it out.
+ * The endpoint lists every quota the plan has, an idle one too (a 5-hour window not started is listed at 0%), so a
+ * missing one is gone, e.g. the 5-hour limit, which verified Ultra accounts don't have. Only the quotas the endpoint
+ * itself reports are judged; one it lists again comes back.
+ */
+export function retiredKeys(samples: readonly Sample[], listed: { at: number; keys: readonly string[] } | null | undefined): string[] {
+  if (!listed?.keys.length) return []
+  return discoveredKeys(samples).filter(k =>
+    (k === 'five_hour' || k === 'seven_day' || isModelScoped(k)) &&
+    !listed.keys.includes(k) &&
+    (latestObs(samples, k)?.at ?? Infinity) < listed.at,
+  )
+}
+
+/** What the pane says about hidden quotas */
+export function retiredText(keys: readonly string[], samples: readonly Sample[]): string {
+  const names = keys.map(k => fullName(k, latestObs(samples, k)?.obs.n)).join(L('、', ', '))
+  return L(
+    `${names}：用量接口已不再返回（套餐没有这项额度了，比如 Ultra 已验证账号没有 5 小时限制），已隐藏`,
+    `${names}: no longer reported by the usage endpoint (the plan no longer has it; verified Ultra accounts have no 5-hour limit), so hidden`,
+  )
+}
+
 export function neighbor(key: string, keys: readonly string[], offset: number): string | null {
   if (keys.length < 2) return null
   const i = keys.indexOf(key)

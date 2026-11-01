@@ -160,3 +160,23 @@ test('Fitting a byte budget thins further before anything old is dropped', () =>
   expect(fit[0]!.t).toBe(list[0]!.t)
 })
 
+
+test('Quotas the usage endpoint stopped listing after their last reading are retired; listed again, they come back', () => {
+  const H = 3600_000
+  const samples: P.Sample[] = [
+    { t: NOW - 6 * H, w: { five_hour: { u: 10, r: NOW - 2 * H }, seven_day: { u: 27, r: NOW + 3 * 86400_000 } } },
+    { t: NOW - 1 * H, w: { seven_day: { u: 28, r: NOW + 3 * 86400_000 }, weekly_fable: { u: 25, r: NOW + 3 * 86400_000 } } },
+  ]
+  // Verified Ultra: the endpoint answers 7-day and Fable only, after the last 5-hour reading
+  expect(P.retiredKeys(samples, { at: NOW, keys: ['seven_day', 'weekly_fable'] })).toEqual(['five_hour'])
+  // A list older than the quota's last reading says nothing about it
+  expect(P.retiredKeys(samples, { at: NOW - 7 * H, keys: ['seven_day'] })).toEqual([])
+  // Listed again: back
+  expect(P.retiredKeys(samples, { at: NOW, keys: ['five_hour', 'seven_day', 'weekly_fable'] })).toEqual([])
+  // No list, or an empty one (an unreadable answer), retires nothing
+  expect(P.retiredKeys(samples, null)).toEqual([])
+  expect(P.retiredKeys(samples, { at: NOW, keys: [] })).toEqual([])
+  // Only quotas the endpoint itself reports are judged
+  const other: P.Sample[] = [{ t: NOW - 6 * H, w: { primary: { u: 5, r: NOW + H } } }]
+  expect(P.retiredKeys(other, { at: NOW, keys: ['seven_day'] })).toEqual([])
+})
