@@ -402,8 +402,10 @@ export function isKnown(key: string): boolean {
 export function discoveredKeys(samples: readonly Sample[]): string[] {
   const hadReset = new Set<string>()
   const hadUse = new Set<string>()
+  // for…in rather than Object.entries: this runs over the whole history on every band refresh and pane draw
   for (const s of samples) {
-    for (const [k, o] of Object.entries(s.w)) {
+    for (const k in s.w) {
+      const o = s.w[k]!
       if (o.r != null) hadReset.add(k)
       if (o.u > 0) hadUse.add(k)
     }
@@ -415,11 +417,11 @@ export function discoveredKeys(samples: readonly Sample[]): string[] {
  * Quotas the plan no longer has: the usage endpoint's latest answer came after the quota's last reading and left it out.
  * The endpoint lists every quota the plan has, an idle one too (a 5-hour window not started is listed at 0%), so a
  * missing one is gone, e.g. the 5-hour limit, which verified Ultra accounts don't have. Only the quotas the endpoint
- * itself reports are judged; one it lists again comes back.
+ * itself reports are judged; one it lists again comes back. `keys`: discoveredKeys(samples), when the caller has it already.
  */
-export function retiredKeys(samples: readonly Sample[], listed: { at: number; keys: readonly string[] } | null | undefined): string[] {
+export function retiredKeys(samples: readonly Sample[], listed: { at: number; keys: readonly string[] } | null | undefined, keys?: readonly string[]): string[] {
   if (!listed?.keys.length) return []
-  return discoveredKeys(samples).filter(k =>
+  return (keys ?? discoveredKeys(samples)).filter(k =>
     (k === 'five_hour' || k === 'seven_day' || isModelScoped(k)) &&
     !listed.keys.includes(k) &&
     (latestObs(samples, k)?.at ?? Infinity) < listed.at,
@@ -527,12 +529,42 @@ const WINDOW_TOLERANCE_MS = 90_000
 const RESET_DROP = 0.05
 const gapThreshold = (W: number) => Math.max(900, 0.02 * W)
 
+type ByReset = { r: number; s: Sample }[]
+
+/** The key's readings that carry a reset time, ordered by it: built once and shared by every window of an overlay */
+function byReset(key: string, samples: readonly Sample[]): ByReset {
+  const out: ByReset = []
+  for (const s of samples) {
+    const r = s.w[key]?.r
+    if (r != null) out.push({ r, s })
+  }
+  return out.sort((a, b) => a.r - b.r)
+}
+
+function clusterResets(sorted: ByReset): number[] {
+  const out: number[] = []
+  for (const { r } of sorted) if (out.length === 0 || r - out[out.length - 1]! > WINDOW_TOLERANCE_MS) out.push(r)
+  return out.reverse()
+}
+
 /** Windows (clustered by resets_at; within 90 s counts as the same one), newest first */
 export function windowsOf(key: string, samples: readonly Sample[]): number[] {
-  const resets = samples.map(s => s.w[key]?.r).filter((r): r is number => r != null).sort((a, b) => a - b)
-  const out: number[] = []
-  for (const r of resets) if (out.length === 0 || r - out[out.length - 1] > WINDOW_TOLERANCE_MS) out.push(r)
-  return out.reverse()
+  return clusterResets(byReset(key, samples))
+}
+
+/** The readings whose reset time is within the tolerance of `reset`: exactly the ones buildSeries keeps for that window, found by binary search */
+function readingsOf(sorted: ByReset, reset: number): Sample[] {
+  const from = reset - WINDOW_TOLERANCE_MS
+  let lo = 0
+  let hi = sorted.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (sorted[mid]!.r < from) lo = mid + 1
+    else hi = mid
+  }
+  const out: Sample[] = []
+  for (let i = lo; i < sorted.length && sorted[i]!.r <= reset + WINDOW_TOLERANCE_MS; i++) out.push(sorted[i]!.s)
+  return out
 }
 
 function slopeWithin(points: readonly Point[], lookback = 0.15): number | null {
@@ -613,7 +645,9 @@ function spread(list: readonly number[], n: number): number[] {
 }
 
 export function buildOverlay(key: string, samples: readonly Sample[], W: number, range: Range, offset: number, now: number): Overlay {
-  const all = windowsOf(key, samples)
+  // One sorted pass over the history, then each window reads only its own readings (was: every window scanned the whole history)
+  const sorted = byReset(key, samples)
+  const all = clusterResets(sorted)
   let chosen: number[]
   if (all.length === 0) chosen = []
   else if (range === 'current') chosen = [all[clamp(offset, 0, all.length - 1)]]
@@ -625,7 +659,7 @@ export function buildOverlay(key: string, samples: readonly Sample[], W: number,
   chosen = spread(chosen, MAX_OVERLAY)
   const newest = all[0]
   const built = [...chosen].sort((a, b) => a - b)
-    .map(r => buildSeries(key, r, samples, W))
+    .map(r => buildSeries(key, r, readingsOf(sorted, r), W))
     .filter((s): s is Series => s != null)
   const entries = built.map((series, i) => ({
     series,
@@ -741,12 +775,13 @@ export function compactSamples(list: readonly Sample[], now: number, scale = 1):
     for (const [limit, st] of TIERS.slice(1)) if (age < limit) return st * scale
     return TIERS[TIERS.length - 1]![1] * scale
   }
-  const sig = (s: Sample) => Object.keys(s.w).sort().join()
+  // Each sample's set of windows, worked out once (it was sorted and joined twice per sample)
+  const sigs = list.map(s => Object.keys(s.w).sort().join())
   const nextOf = new Map<string, Sample>()
   const keep: boolean[] = new Array(list.length)
   for (let i = list.length - 1; i >= 0; i--) {
     const s = list[i]!
-    const k = sig(s)
+    const k = sigs[i]!
     const n = nextOf.get(k)
     nextOf.set(k, s)
     const st = step(s.t)
@@ -760,7 +795,7 @@ export function compactSamples(list: readonly Sample[], now: number, scale = 1):
   }
   // The first sample of each set of windows is where its history starts
   const seen = new Set<string>()
-  list.forEach((s, i) => { const k = sig(s); if (!seen.has(k)) { seen.add(k); keep[i] = true } })
+  sigs.forEach((k, i) => { if (!seen.has(k)) { seen.add(k); keep[i] = true } })
   return list.filter((_, i) => keep[i])
 }
 

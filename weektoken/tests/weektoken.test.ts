@@ -1,4 +1,4 @@
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, mock, test, type Mounted } from 'claude-code/testing'
 
 const NOW = Date.UTC(2026, 9, 3, 12, 0, 0)
 const iso = (ms: number) => new Date(ms).toISOString()
@@ -23,8 +23,10 @@ function world(on: any, setting = '中文', apple = APPLE_EN, env: Record<string
   const toasts: string[] = []
   const stored: Record<string, unknown> = {}
   const gets: Record<string, number> = {}
+  const sets: Record<string, number> = {}
   on('store.get', (_$: unknown, e: { key: string }) => { gets[e.key] = (gets[e.key] ?? 0) + 1; return { value: stored[e.key] } })
-  on('store.set', (_$: unknown, e: { key: string; value: unknown }) => { stored[e.key] = e.value; return { value: undefined } })
+  on('store.set', (_$: unknown, e: { key: string; value: unknown }) => { sets[e.key] = (sets[e.key] ?? 0) + 1; stored[e.key] = e.value; return { value: undefined } })
+  stored.__sets = sets
   // Engine APIs the plugin calls: the test answers with { value }; session.start is an event and returns its result directly
   on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200000 }, rateLimits: (stored.__limits as unknown[] | undefined) ?? LIMITS } }))
   on('session.start', (_$: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
@@ -135,7 +137,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     if (surface === 'terminal') {
       // Terminal burn-up page picks the quota from a dropdown
       expect(burn).toContain('"key":"quota"')
-      await ui.select({ key: 'quota', value: 'five_hour' } as any)
+      await (ui as Mounted<'terminal'>).select({ key: 'quota', value: 'five_hour' } as any)
       const switched = JSON.stringify(await ui.drawn())
       expect(switched).toContain('5 小时会话额度')
       // Options still include 7-day, but the current value is now 5-hour
@@ -237,7 +239,7 @@ test('Pane footer shows the author credit', async ($, on) => {
 
 test('Band output is unchanged when a new sample leaves its displayed numbers the same, and changes only when they change', async ($, on) => {
   world(on)
-  on('session.measure', (_$: unknown, e: { changed: unknown }) => ({ changed: e.changed }))
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'AbovePrompt', props: BAND as any })
   // Button handles change on every draw; strip them before comparing
@@ -275,7 +277,7 @@ test('"Last used" follows local replies: no hint while replies keep coming; Fabl
 
 test('With several sessions open, writing samples first merges what others just wrote instead of overwriting it', async ($, on) => {
   const stored = world(on)
-  on('session.measure', (_$: unknown, e: { changed: unknown }) => ({ changed: e.changed }))
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   // Another session writes a later sample meanwhile
   const other = { t: NOW + 30 * 60_000, w: { five_hour: { u: 41, r: NOW + 2 * 3600_000 } } }
@@ -524,7 +526,7 @@ test('Burn-up "past month" is a plain image until "explore" swaps in a hoverable
 
 test('Pace page: three readings drawn inside the ring; under pace gets same-hue headroom hatching, over pace a one-step darker hatched segment; no glow', async ($, on) => {
   const stored = world(on)
-  on('session.measure', (_$: unknown, e: { changed: unknown }) => ({ changed: e.changed }))
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
   await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
   const pane = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
   const under = JSON.stringify(await pane.drawn())
@@ -782,3 +784,49 @@ test('The whole history file of the macOS app is imported once, not only its las
   expect(first).toBe(NOW - 9000 * 10 * 60_000)
 })
 
+
+test('A history file rewritten with nothing new does not rewrite the stored samples', async ($, on) => {
+  const stored = world(on, '中文', APPLE_EN, { HOME: '/home/u' })
+  const sets = stored.__sets as Record<string, number>
+  const rows: string[] = []
+  for (let i = 0; i < 50; i++) {
+    const t = (NOW - (50 - i) * 10 * 60_000) / 1000
+    rows.push(JSON.stringify({ t, rl: { seven_day: { used_percentage: i, resets_at: t + 3600 } } }))
+  }
+  stored.__files = { '/home/u/.weektoken/samples.jsonl': rows.join('\n') }
+  let mtime = 1
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: mtime, isLink: false } }))
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  expect((stored.samples as unknown[]).length).toBeGreaterThan(50)
+  const before = sets.samples ?? 0
+  // The app touched the file without adding a line: it is read again, and the store is left as it is
+  mtime = 2
+  await clockOf(stored).advance(10 * 60_000)
+  expect(stored.historyMtime).toBe(2)
+  expect(sets.samples ?? 0).toBe(before)
+})
+
+test('The burn-up chart follows a new reading although the pane reuses its drawing between redraws', async ($, on) => {
+  const stored = world(on)
+  on('session.measure', (_$, e) => ({ changed: e.changed }))
+  on('turn.complete', () => ({ text: '' }))
+  stored.bandKey = 'seven_day'
+  await $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true } as any)
+  const ui = await $.ui.mount({ plugin: 'weektoken', surface: 'desktop', component: 'Pane', requestId: 'weektoken', props: PANE_PROPS as any } as any)
+  await ui.press({ key: 'tab-burnup' } as any)
+  // One reading in this window: nothing to draw yet
+  expect(JSON.stringify(await ui.drawn())).toContain('这个窗口的采样还不够画趋势')
+  // A reply that changes nothing the chart reads redraws the pane with the same chart
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', usage: { model: 'claude-opus-5-5', input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } as any)
+  expect(JSON.stringify(await ui.drawn())).toContain('这个窗口的采样还不够画趋势')
+  // A second reading ten minutes later: the line appears
+  await clockOf(stored).advance(10 * 60_000)
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [LIMITS[0], { ...LIMITS[1], percentUsed: 66 }], changed: ['rateLimits'] } as any)
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).not.toContain('这个窗口的采样还不够画趋势')
+  expect(drawn).toContain('<polyline')
+  // Then 70%: the drawing changes again rather than staying on the one before
+  await clockOf(stored).advance(10 * 60_000)
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [LIMITS[0], { ...LIMITS[1], percentUsed: 70 }], changed: ['rateLimits'] } as any)
+  expect(JSON.stringify(await ui.drawn())).not.toBe(drawn)
+})

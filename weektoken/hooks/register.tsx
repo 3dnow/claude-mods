@@ -11,7 +11,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Activity, BandMode, BandShow, Note, PaneView, QuotaList, Sample } from '../types'
-import { L, langFromAppleLanguages, langFromEnv, langFromSetting, setLang, type Lang } from './i18n.ts'
+import { getLang, L, langFromAppleLanguages, langFromEnv, langFromSetting, setLang, type Lang } from './i18n.ts'
 import * as P from './pace.ts'
 import { identity, identityText, statusText, STATUS } from './theme.ts'
 import { bandBarSvg, burnUpSvg, creditSvg, ringsSvg } from './svg.ts'
@@ -63,8 +63,9 @@ type Model = { keys: string[]; rows: Record<string, QuotaRow>; band: string | nu
 
 function buildModel(samples: readonly Sample[], view: PaneView, now: number, bandKey: string | null = null, listed: QuotaList = null): Model {
   // Quotas the plan no longer has are left out, so a band set to one falls back to the tightest of the rest
-  const retired = P.retiredKeys(samples, listed)
-  const keys = P.discoveredKeys(samples).filter(k => !retired.includes(k))
+  const found = P.discoveredKeys(samples)
+  const retired = P.retiredKeys(samples, listed, found)
+  const keys = found.filter(k => !retired.includes(k))
   const rows: Record<string, QuotaRow> = {}
   for (const k of keys) {
     const lo = P.latestObs(samples, k)
@@ -139,11 +140,28 @@ async function addSample($: any, s: Sample): Promise<boolean> {
   return changed
 }
 
+// Sample writes run one at a time: the 1-, 5-, 10- and 15-minute timers line up (every 5 minutes two or more fire together),
+// and two overlapping writes could land out of order. A call made while a write waits to start joins it: that write
+// reads the latest samples when it starts, so it covers the caller's change too
+let persistQueued: Promise<void> | null = null
+let persistTail: Promise<unknown> = Promise.resolve()
+
+function persistSamples($: any): Promise<void> {
+  if (persistQueued) return persistQueued
+  const run = persistTail.then(() => {
+    persistQueued = null
+    return writeSamples($)
+  })
+  persistQueued = run
+  persistTail = run.catch(() => {})
+  return run
+}
+
 /**
  * Merge with what's stored before writing back: with several sessions open, each writing its full list would clobber samples another session just recorded.
  * Other sessions' samples are merged into this one too. Read-merge-write isn't atomic; an occasional collision just lands one write later, since each session merges again on its next write.
  */
-async function persistSamples($: any): Promise<void> {
+async function writeSamples($: any): Promise<void> {
   const stored = await $.store.get('samples')
   const mine = (await read($, samplesA)) ?? []
   const now = await $.clock.now()
@@ -158,7 +176,13 @@ async function persistSamples($: any): Promise<void> {
   // Small revision tag: other sessions check it every minute and skip reading the full samples if unchanged
   lastSeenRev = `${merged.length}:${merged[merged.length - 1]?.t ?? 0}`
   await $.store.set('samplesRev', lastSeenRev)
-  if (merged.length !== mine.length) await update($, samplesA, () => merged)
+  if (merged.length === mine.length) return
+  // Replace only what this write read: a reading recorded meanwhile (another hook, a timer) is kept, not overwritten
+  const seen = new Set(mine.map(s => s.t))
+  await update($, samplesA, cur => {
+    const fresh = (cur ?? []).filter(s => !seen.has(s.t))
+    return fresh.length ? P.mergeSamples(merged, fresh) : merged
+  })
 }
 
 let lastSeenRev: string | null = null
@@ -171,9 +195,9 @@ async function adoptStoredSamples($: any): Promise<boolean> {
   if (!Array.isArray(stored)) return false
   lastSeenRev = typeof rev === 'string' ? rev : null
   const mine = (await read($, samplesA)) ?? []
-  const merged = P.mergeSamples(stored as Sample[], mine)
-  if (merged.length === mine.length) return false
-  await update($, samplesA, () => merged)
+  if (P.mergeSamples(stored as Sample[], mine).length === mine.length) return false
+  // Merged against the current value, so a reading recorded since `mine` was read is kept
+  await update($, samplesA, cur => P.mergeSamples(stored as Sample[], cur ?? []))
   return true
 }
 
@@ -197,10 +221,10 @@ const mergeActivity = (a: Activity, b: Activity): Activity => {
 async function recordActivity($: any, model: string | undefined): Promise<void> {
   const now = await $.clock.now()
   const fam = P.modelFamily(model)
-  await update($, activityA, a => mergeActivity(a ?? { byModel: {} }, { any: now, byModel: fam ? { [fam]: now } : {} }))
+  const mine = await update($, activityA, a => mergeActivity(a ?? { byModel: {} }, { any: now, byModel: fam ? { [fam]: now } : {} }))
   // Other sessions write too: merge with the stored value before saving, keeping the later time
   const stored = ((await $.store.get('activity')) as Activity | undefined) ?? { byModel: {} }
-  await $.store.set('activity', mergeActivity(stored, await read($, activityA)))
+  await $.store.set('activity', mergeActivity(stored, mine))
 }
 
 /** A tree that draws nothing: null, empty string, or only empty Box/Text */
@@ -281,7 +305,8 @@ async function importHistory($: any): Promise<number> {
     added = merged.length - (list ?? []).length
     return merged
   })
-  await persistSamples($)
+  // Nothing new (the app rewrote lines already imported): skip rewriting the whole store
+  if (added) await persistSamples($)
   await $.store.set('historyMtime', st.mtimeMs)
   await $.store.set('historyImport', HISTORY_IMPORT)
   if (added) await refreshBand($)
@@ -480,8 +505,7 @@ async function syncPaneOpen($: any): Promise<void> {
 }
 
 async function setView($: any, fn: (v: PaneView) => PaneView): Promise<void> {
-  await update($, viewA, v => fn(v ?? DEFAULT_VIEW))
-  const v = await read($, viewA)
+  const v = await update($, viewA, v => fn(v ?? DEFAULT_VIEW))
   await $.store.set('view', { key: v.key })
 }
 
@@ -527,11 +551,6 @@ async function answerHideBand($: any, hide: boolean): Promise<void> {
   confirmTimer = null
   await update($, confirmHideA, () => false)
   if (hide) await setBand($, 'hidden')
-}
-
-/** Band prev/next arrows: switch quota, the pane follows */
-async function stepBand($: any, keys: readonly string[], cur: string, offset: number): Promise<void> {
-  await stepKey($, keys, cur, offset)
 }
 
 // When the desktop pane doesn't have the keyboard (focus in the prompt), the first click only hands focus to the pane: the engine sends ui.focus, no ui.press.
@@ -626,15 +645,11 @@ const cells = (s: string) => [...s].reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-�
  * Width of the band's name cell: sized to the longest quota name, name centered. Switching quotas moves neither the arrows nor the text after them.
  * Counted in character cells; desktop fonts are proportional but a cell is slightly wider than a typical glyph, so no extra margin (with it the title looks too wide)
  */
-const bandNameWidth = (show: BandShow, _term: boolean) =>
+const bandNameWidth = (show: BandShow) =>
   Math.max(...show.keys.map(k => cells(P.displayName(k, k === show.key ? show.n : undefined))), cells(P.displayName(show.key, show.n)))
 
 /**
- * Terminal band layout: text at its actual width, the bar takes the remaining cells (max 48).
- * Under 8 cells, drop the "elapsed" segment first; still short, skip the bar. Never let the line wrap to two.
- */
-/**
- * Band layout: the bar takes the remaining cells; when short, drop the "elapsed" segment first, then skip the bar (terminal).
+ * Band layout: the bar takes the remaining cells (at most 48 in the terminal); when short, drop the "elapsed" segment first, then skip the bar (terminal).
  * "Does it fit" assumes the worst case: longest quota name, widest reading such as "100%", the longer of the two button labels.
  * Depends only on band width, not the current quota's numbers, so all quotas behave the same at a given width; none shows in full while another is cut to "elap…".
  * Terminal counts exact character cells; on desktop fonts are proportional and native buttons have padding, so arrows and buttons use estimated cells and the bar keeps at least BAR_MIN.
@@ -648,7 +663,7 @@ function bandLayout(show: BandShow, cols: number, term: boolean): { bar: number;
   const width = (withElapsed: boolean) => {
     // Name plus both arrows form one group: terminal "h: ❮" / "l: ❯" are 4 cells each, one space apart; desktop native buttons have padding, 3 cells each, no spaces
     const arrows = show.keys.length > 1 ? (term ? 4 + 4 + 2 : 3 + 3) : 0
-    const parts = [bandNameWidth(show, term) + arrows, used, ...(withElapsed ? [elapsed] : [])]
+    const parts = [bandNameWidth(show) + arrows, used, ...(withElapsed ? [elapsed] : [])]
     const line = parts.reduce((a, b) => a + b, 0) + parts.length - 1
     // Terminal: one space between line, bar, spacer, Details and Hide; the engine draws " [-]" last, plus one more cell;
     // Desktop: 2 cells of padding per button, one space between line, bar and the two buttons
@@ -675,7 +690,7 @@ function bandLine($: any, e: any, show: BandShow, withElapsed = true) {
         plain
         {...(term ? { hotkey: offset < 0 ? 'h' : 'l' } : {})}
         hover={{ color: identityText(P.neighbor(show.key, show.keys, offset) as string), bold: true }}
-        onPress={() => quiet(stepBand($, show.keys, show.key, offset))}
+        onPress={() => quiet(stepKey($, show.keys, show.key, offset))}
       />
     </Box>
   )
@@ -684,7 +699,7 @@ function bandLine($: any, e: any, show: BandShow, withElapsed = true) {
       {/* Arrows and name as one group; desktop native buttons have their own padding, so no gap inside, keeping the title from getting too wide */}
       <Box flexDirection="row" alignItems="center" gap={term ? 1 : 0} flexShrink={0}>
         {canSwitch ? arrow(-1) : null}
-        <Box flexShrink={0} width={bandNameWidth(show, term)} justifyContent="center"><Text color={identityText(show.key)} wrap="truncate-end">{t.name}</Text></Box>
+        <Box flexShrink={0} width={bandNameWidth(show)} justifyContent="center"><Text color={identityText(show.key)} wrap="truncate-end">{t.name}</Text></Box>
         {canSwitch ? arrow(1) : null}
       </Box>
       {t.used ? (
@@ -848,9 +863,43 @@ function drawPaceTab($: any, e: any, samples: readonly Sample[], m: Model, row: 
   )
 }
 
+/**
+ * Fingerprint of one quota's readings (time, usage, reset). A state read hands back a fresh copy every time, so identity
+ * can't tell an unchanged history; one pass over it is far cheaper than the chart it lets the pane reuse.
+ */
+function readingsPrint(samples: readonly Sample[], key: string): string {
+  let h = 0x811c9dc5
+  let n = 0
+  for (const s of samples) {
+    const o = s.w[key]
+    if (!o) continue
+    n++
+    h = Math.imul(h ^ (s.t | 0), 0x01000193)
+    h = Math.imul(h ^ Math.round(o.u * 1000), 0x01000193)
+    h = Math.imul(h ^ (o.r == null ? -1 : o.r | 0), 0x01000193)
+  }
+  return `${n}:${h >>> 0}`
+}
+
+/**
+ * The last few burn-up overlays and drawings. The pane redraws on every reply (samples, activity) and every press, and on a
+ * long history the overlay and its two SVGs (plain, and the hoverable one measured for Inspect lines) take tens of ms each time
+ */
+const chartCache = new Map<string, unknown>()
+
+function cached<T>(key: string, make: () => T): T {
+  if (chartCache.has(key)) return chartCache.get(key) as T
+  const v = make()
+  chartCache.set(key, v)
+  if (chartCache.size > 8) chartCache.delete(chartCache.keys().next().value as string)
+  return v
+}
+
 function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row: QuotaRow, view: PaneView, now: number) {
   const { Box, Text, Button, Select } = $.ui.resolve(e)
-  const o = P.buildOverlay(row.key, samples, row.len.seconds, view.range, view.offset, now)
+  // Everything the overlay reads: this quota's readings, its window length, the range and page; the clock only for "Last month"
+  const chartKey = [readingsPrint(samples, row.key), row.key, row.len.seconds, view.range, view.offset, view.range === 'month' ? Math.floor(now / 60_000) : ''].join('|')
+  const o = cached(`o|${chartKey}`, () => P.buildOverlay(row.key, samples, row.len.seconds, view.range, view.offset, now))
   // A long stretch of this window without readings is said, not left as a quietly short line
   const gap = view.range === 'current' && view.offset === 0 ? P.readingGap(samples, row.key, row.len.seconds, now) : null
   const gapNote = gap ? <Text wrap="wrap">{P.gapText(gap, row.name)}</Text> : null
@@ -909,10 +958,15 @@ function drawBurnUpTab($: any, e: any, samples: readonly Sample[], m: Model, row
     )
   }
   const title = L(`${row.full} 用量轨迹`, `${row.full} burn-up`)
-  const input = { width: 360, overlay: o, W, status: P.displayStatus(row.d), id: identity(row.key), title }
-  const plain = burnUpSvg(input)
-  // The hoverable version adds hit lines and labels; if it exceeds the cap, no inspect mode, the plain chart draws as usual
-  const live = view.range !== 'current' && o.entries.length > 1 ? burnUpSvg({ ...input, interactive: true }) : null
+  const status = P.displayStatus(row.d)
+  const { plain, live } = cached(`svg|${chartKey}|${status}|${title}|${getLang()}`, () => {
+    const input = { width: 360, overlay: o, W, status, id: identity(row.key), title }
+    return {
+      plain: burnUpSvg(input),
+      // The hoverable version adds hit lines and labels; if it exceeds the cap, no inspect mode, the plain chart draws as usual
+      live: view.range !== 'current' && o.entries.length > 1 ? burnUpSvg({ ...input, interactive: true }) : null,
+    }
+  })
   const canExplore = live != null && live.length <= SVG_MAX
   const exploring = canExplore && !!view.explore
   const svg = exploring && live ? live : plain
@@ -1052,7 +1106,7 @@ const commandSpec = () => ({
   name: 'weektoken',
   description: L('打开 WeekToken 配速面板;show / hide 显示或隐藏横条', 'Open the WeekToken pace pane; show / hide the band'),
   argumentHint: '[show | hide]',
-  immediate: true,
+  immediate: true as const,
 })
 
 // Timer handles: on another session.start in the same environment (enable, process restart), cancel the old ones first so they don't stack

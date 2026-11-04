@@ -45,7 +45,7 @@ In the terminal, the band sits above the prompt and `/weektoken` docks beside th
 | Anthropic's usage endpoint, through Claude Code (every 15 minutes, shared by all open sessions, and when you press **↻ Refresh**); local `claude -p --no-session-persistence /usage` if that isn't available on a refresh | Fresh per-model quotas; also the 5-hour and 7-day windows when there is no local reading from the last 10 minutes (a new session before its first reply) |
 | `~/.weektoken/samples.jsonl` (optional) | History from the WeekToken macOS app, imported read-only |
 
-Samples are kept in the mod's own cross-session store, up to 8000; the oldest go first. Sessions open at the same time merge their samples and keep one copy of each reading. Without history to import from the WeekToken macOS app, history starts when you install the mod, since the API only reports current values.
+Samples are kept in the mod's own cross-session store, the whole history thinned to fit about 1.5 MB: the last 14 days in full, older readings one per 30 minutes (to 45 days back), 2 hours (to 120 days) or 6 hours (beyond), always keeping the very first reading and the last one before each reset, so the history keeps its start and every window its peak. If that still does not fit, old readings are thinned harder, and only then are the oldest dropped. Sessions open at the same time merge their samples and keep one copy of each reading. Without history to import from the WeekToken macOS app, history starts when you install the mod, since the API only reports current values.
 
 A quota you are not using does not change, so old data still gives a valid pace.
 
@@ -87,7 +87,7 @@ Every command is fixed text, and none goes through a shell.
 | --- | --- | --- |
 | `claude -p --no-session-persistence /usage` | Only when you press **↻ Refresh** and the usage endpoint above can't be used | A fallback source for per-model quotas such as Fable. The mod looks for `claude` on your `PATH`, then in `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin` and `/usr/local/bin`. It saves no session. |
 | `defaults read -g AppleLanguages` | At session start, and when you change Claude Code's language | Reads the macOS language when Claude Code's own language setting is not set (macOS only). |
-| `tail -n 8000 ~/.weektoken/samples.jsonl` | At session start and every 10 minutes, only if the file exists | Imports history from the WeekToken macOS app. |
+| `tail -n 1000000 ~/.weektoken/samples.jsonl` once, then `tail -n 2000` | At session start and every 10 minutes, only if the file exists and has changed since the last import | Imports history from the WeekToken macOS app: the whole file the first time, then the lines added since. |
 | `perl`, with one fixed pattern and no shell | Only when `~/.claude.json` is over 4 MiB and can't be read directly | Extracts just the `cachedUsageUtilization` entry from that file and prints it back to the mod; nothing else is read or sent. |
 
 ### What it reads on your machine
@@ -100,7 +100,7 @@ Every command is fixed text, and none goes through a shell.
 
 ### What it stores
 
-In the mod's own store on your machine: samples (up to 8000) and their version stamp, when each model was last used, whether the band is shown and which quota it shows, the quota selected in the pane, the modification time of the imported history file, and whether the welcome notice was shown. The interface language is detected each session, not stored.
+In the mod's own store on your machine: samples (thinned to fit about 1.5 MB, above) and their revision tag, when each model was last used, whether the band is shown and which quota it shows, the quota selected in the pane, which quotas the usage endpoint listed in its last answer and when, when the endpoint was last read (and, after a failure, until when it is left alone), the modification time of the imported history file and whether that file has been imported whole once, and whether the welcome notice was shown. The interface language is detected each session, not stored.
 
 ### Hooks
 
